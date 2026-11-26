@@ -184,3 +184,50 @@ kolson_unlock_rt: /data/app/.../lib/arm64-v8a/libkolson.so base=0x... patched=23
 * Рантайм-шим должен грузиться **после** того, как `libkolson.so` замаплен
   (иначе он честно скажет `not loaded yet`). Если нужен режим «до», используйте
   offline-патч.
+
+## если лаунчер пишет «Удалите сторонние библиотеки из папки …»
+
+Это сообщение **не** dex-строка: в `classes8.dex` / `classes9.dex` его нет,
+и в `libkolson.so` его тоже нет. Что есть в dex — только имена папок
+(`/storage/emulated/0/1NEIZZIR/Modules/`, `Custom/modules`), а сам текст
+приходит из ресурсов (`resources.arsc`, строка-шаблон с `%1$s`/`%2$s`) либо
+из другого dex / нативной части лаунчера. Поэтому грепать `classes8.dex` по
+«Удалите» бесполезно.
+
+Найти источник на своём APK:
+
+```bash
+# весь APK: все classesN.dex + resources.arsc + assets + все lib/*/*.so
+python3 tools/kolson/find_notice.py app.apk "сторонние библиотеки"
+
+# или сразу снять APK с подключённого телефона и просканировать
+python3 tools/kolson/find_notice.py --device com.br.top "сторонние"
+```
+
+Вывод даёт файл + офсет + (для arsc) номер строки в пуле. Дальше по номеру
+строки ищется `R.string` в dex, а по нему — метод, который её показывает.
+
+Пока источник не найден, причины баннера проверяются в таком порядке:
+
+1. **лишние `.so` в `lib/arm64-v8a`** — лаунчер перечисляет загруженные
+   библиотеки и сравнивает с тем, что лежит в APK. Наш `libkolson_patch.so`
+   (и прежний `libklnc.so`) — как раз «сторонняя библиотека». Вариант без
+   единого лишнего файла: offline-патч (`--patch`, замена
+   `lib/arm64-v8a/libkolson.so`) — имя и число библиотек не меняются;
+2. **загрузка не из APK** — `LD_PRELOAD=/data/local/tmp/...` или `System.load()`
+   по абсолютному пути даёт библиотеку из «чужой» папки; для чистого теста
+   ставить только через APK;
+3. **реально занятые папки модулей**:
+
+   ```bash
+   adb shell 'ls -la /sdcard/1NEIZZIR/Modules 2>&1;
+              ls -la /sdcard/Android/data/com.br.top/files/Custom/modules 2>&1'
+   ```
+
+   если там лежат `.so` от прошлых модов — убрать их и перезапустить игру;
+4. **лог** — что именно лаунчер считает сторонним:
+
+   ```bash
+   adb logcat -c; adb shell am start -n com.br.top/... ; sleep 8
+   adb logcat -d | grep -iE "modules|third|сторон|umbrella|kolson" | head -50
+   ```
