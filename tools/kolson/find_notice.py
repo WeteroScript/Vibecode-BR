@@ -11,6 +11,11 @@ Custom/modules и перезапустите игру" могут жить в Л
     python3 find_notice.py --lib libkolson.so                  # что искать в нативной части
     python3 find_notice.py --hide app.apk -o app-clean.apk     # сделать баннер невидимым
     python3 find_notice.py --scan-dir /sdcard/Download "сторонние"  # все apk в папке
+    python3 find_notice.py --ls app.apk                          # что вообще лежит в APK
+    python3 find_notice.py --deep app.apk "сторонние" --xor       # все файлы + распаковка + xor
+    python3 find_notice.py --deep app.apk "сторонние" --frag сторон библиотек  # по кускам
+    python3 find_notice.py --net "сторонние"                  # политики с CDN лаунчера
+    python3 find_notice.py --grep-dir /sdcard/1NEIZZIR "сторон"  # данные игры на устройстве
     python3 find_notice.py app.apk "сторонние" --report r.txt  # короткий отчёт файлом
     python3 find_notice.py app.apk --list модул        # все строки с подстрокой
     python3 find_notice.py classes8.dex --list Custom  # можно по одному dex
@@ -21,12 +26,15 @@ Custom/modules и перезапустите игру" могут жить в Л
 code_item, владельца метода - по class_data_item. Для вывода контекста рядом
 подтягиваются соседние const-string того же метода.
 """
+import gzip
 import io
+import lzma
 import os
 import re
 import struct
 import sys
 import zipfile
+import zlib
 
 CONST_STRING = 0x1A        # const-string vAA, string@BBBB
 CONST_STRING_JUMBO = 0x1B  # const-string/jumbo vAA, string@BBBBBBBB
@@ -503,6 +511,150 @@ def hide_apk(src, dst, needle):
     return total
 
 
+# ---------------------------------------------------- глубокий скан: всё + xor
+def blob_variants(raw, limit=200 * 1024 * 1024):
+    """(метка, распакованные байты) для zlib/gzip/lzma/deflate, если применимо."""
+    out = [("raw", raw)]
+    for tag, fn in (("zlib", lambda b: zlib.decompress(b)),
+                    ("gzip", lambda b: gzip.decompress(b)),
+                    ("lzma", lambda b: lzma.decompress(b)),
+                    ("deflate", lambda b: zlib.decompress(b, -15))):
+        try:
+            d = fn(raw)
+        except Exception:
+            continue
+        if 0 < len(d) <= limit:
+            out.append((tag, d))
+    return out
+
+
+def iter_blobs(path):
+    """Все файлы APK, кроме подписей. yield (имя, байты)."""
+    with zipfile.ZipFile(path) as z:
+        for info in z.infolist():
+            n = info.filename
+            if n.endswith("/") or n.startswith("META-INF/"):
+                continue
+            try:
+                yield n, z.read(n)
+            except (RuntimeError, zipfile.BadZipFile):
+                continue
+
+
+def xor_scan(raw, needle, max_key=255):
+    """Однобайтовый XOR: [(key, offset)] там, где после xor видно needle."""
+    pats = [p for _e, p in _encodings(needle)]
+    found = []
+    for k in range(1, max_key + 1):
+        tbl = bytes((i ^ k) for i in range(256))
+        try:
+            dec = raw.translate(tbl)
+        except Exception:
+            continue
+        for pat in pats:
+            i = dec.find(pat)
+            while i >= 0:
+                found.append((k, i))
+                i = dec.find(pat, i + 1)
+                if len(found) > 50:
+                    return found
+    return found
+
+
+def deep_scan(path, needle, fragments=None, do_xor=False):
+    """Скан ВСЕХ файлов APK: как есть, после распаковки, после однобайтового xor."""
+    total = 0
+    listed = []
+    for name, raw in iter_blobs(path):
+        listed.append((name, len(raw)))
+        for how, blob in blob_variants(raw):
+            hits = search_blob(blob, needle)
+            if hits:
+                total += len(hits)
+                print("== %s [%s]: %d" % (name, how, len(hits)))
+                for off, enc in hits[:10]:
+                    print("   +%#x [%s] %r" % (off, enc, context(blob, off, enc)))
+            if fragments:
+                got = [f for f in fragments if f.lower().encode() in blob.lower()
+                       or f.lower().encode("utf-16-le") in blob.lower()]
+                if got:
+                    print("== %s [%s]: фрагменты %s" % (name, how, ", ".join(got)))
+            if do_xor:
+                for key, off in xor_scan(blob, needle):
+                    total += 1
+                    print("== %s [%s]: XOR 0x%02x +%#x" % (name, how, key, off))
+                    break
+    if not total:
+        print("нет ни в открытом виде, ни после распаковки%s" %
+              (", ни под однобайтовым xor" if do_xor else ""))
+    return total, listed
+
+
+# ------------------------------------------------------- сеть и файлы на устройстве
+CDN_URLS = (
+    "https://cdn.kolson.online/servers.json",
+    "https://cdnru.kolson.online/servers.json",
+    "https://cdn.kolson.online/launcher-release-v7.json",
+    "https://cdnru.kolson.online/launcher-release-v7.json",
+)
+
+
+def net_scan(needle, urls=CDN_URLS, timeout=20):
+    """Качает политики лаунчера и ищет в них строку/фрагменты."""
+    import urllib.request
+    total = 0
+    frags = [needle] + [needle[:6], "сторон", "библиотек"]
+    for u in urls:
+        try:
+            req = urllib.request.Request(u, headers={"User-Agent": "kolson-find/1"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = r.read()
+                code = r.status
+        except Exception as e:
+            print("== %s: %s" % (u, e))
+            continue
+        print("== %s: HTTP %s, %d байт" % (u, code, len(body)))
+        try:
+            txt = body.decode("utf-8", "replace")
+        except Exception:
+            txt = ""
+        hit = [f for f in frags if f.lower() in txt.lower()]
+        if hit:
+            total += 1
+            print("   ЕСТЬ: %s" % ", ".join(hit))
+            low = txt.lower()
+            for f in hit:
+                i = low.find(f.lower())
+                print("   ...%s..." % " ".join(txt[max(0, i - 120):i + 160].split()))
+        else:
+            print("   нет вхождения; ключи: %s" % ", ".join(sorted(set(
+                re.findall(r'"([a-zA-Z_][a-zA-Z0-9_]{2,24})"\s*:', txt)))[:25]))
+    return total
+
+
+def grep_dir(folder, needle, max_size=64 * 1024 * 1024):
+    """Ищет строку в файлах папки (данные игры/лаунчера на устройстве)."""
+    total = 0
+    for root, _dirs, files in os.walk(folder):
+        for f in files:
+            path = os.path.join(root, f)
+            try:
+                if os.path.getsize(path) > max_size:
+                    continue
+                raw = open(path, "rb").read()
+            except OSError:
+                continue
+            hits = search_blob(raw, needle)
+            if hits:
+                total += 1
+                print("== %s: %d" % (path, len(hits)))
+                for off, enc in hits[:5]:
+                    print("   +%#x [%s] %r" % (off, enc, context(raw, off, enc)))
+    if not total:
+        print("в %s строки нет" % folder)
+    return total
+
+
 # ---------------------------------------------------------------------- вход
 def load_dexes(path):
     if os.path.isdir(path):
@@ -638,6 +790,36 @@ def report_dex(d, needle, mode_list=False, mode_smali=False):
 
 def main(argv):
     argv = list(argv)
+    if "--net" in argv:
+        i = argv.index("--net")
+        needle = argv[i + 1] if len(argv) > i + 1 and not argv[i + 1].startswith("--") \
+            else "сторонние библиотеки"
+        return 0 if net_scan(needle) else 1
+    if "--grep-dir" in argv:
+        i = argv.index("--grep-dir")
+        folder = argv[i + 1]
+        rest = [a for a in argv[i + 2:] if not a.startswith("--")]
+        needle = rest[0] if rest else "сторонние библиотеки"
+        return 0 if grep_dir(folder, needle) else 1
+    if "--ls" in argv:
+        i = argv.index("--ls")
+        path = argv[i + 1]
+        print("содержимое %s:" % path)
+        for name, raw in sorted(iter_blobs(path), key=lambda x: -len(x[1]))[:80]:
+            print("   %10d  %s" % (len(raw), name))
+        return 0
+    if "--deep" in argv:
+        i = argv.index("--deep")
+        path = argv[i + 1]
+        rest = [a for a in argv[1:] if not a.startswith("--") and a != path
+                and a not in (argv[argv.index("-o") + 1] if "-o" in argv else "",)]
+        needle = rest[0] if rest else "сторонние библиотеки"
+        frags = None
+        if "--frag" in argv:
+            frags = [f for f in rest[1:]] or ["сторон", "библиотек", "перезапуст"]
+        total, listed = deep_scan(path, needle, frags, do_xor="--xor" in argv)
+        print("итого вхождений %r: %d (файлов: %d)" % (needle, total, len(listed)))
+        return 0 if total else 1
     if "--scan-dir" in argv:
         i = argv.index("--scan-dir")
         folder = argv[i + 1]
