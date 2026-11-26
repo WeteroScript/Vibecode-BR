@@ -35,6 +35,7 @@
 #include <unistd.h>
 
 #include "kolson_patches.h"
+#include "kolson_stealth.h"
 
 #if !defined(KOLSON_HOST)
 #include <android/log.h>
@@ -213,6 +214,9 @@ static int kolson_run(const char *dir) {
     }
 
     kolson_patch_image(g_base, &g_patched, &g_failed);
+    /* libkolson уже в памяти: догоняем GOT-подмену для модулей, загруженных
+       раньше нас (на Android основную работу делает RTLD_GLOBAL-промоушен) */
+    kolson_stealth_install();
     LOGI("%s base=%p patched=%d failed=%d", g_path, (void *)g_base, g_patched, g_failed);
     int rc = g_failed ? -1 : 0;
     pthread_mutex_unlock(&g_lock);
@@ -221,7 +225,13 @@ static int kolson_run(const char *dir) {
 
 /* Конструктор: если библиотека уже в памяти (LD_PRELOAD / инжект / обычная
    загрузка после неё) - патчим сразу, до первого нативного вызова. */
-__attribute__((constructor)) static void kolson_ctor(void) { kolson_run(NULL); }
+__attribute__((constructor)) static void kolson_ctor(void) {
+    /* 1. поднять себя в глобальную область: тогда импорты libkolson
+          (open/fopen/dl_iterate_phdr) свяжутся с нашими обёртками;
+       2. найти/подгрузить libkolson и выключить в ней проверки. */
+    kolson_stealth_promote();
+    kolson_run(NULL);
+}
 
 /* --------------------------------------------------------------- JNI-часть */
 
@@ -254,6 +264,20 @@ JNIEXPORT jint JNICALL
 Java_com_klnc_native_KolsonPatch_nativeFailed(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
     return (jint)g_failed;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_klnc_native_KolsonPatch_nativeStealth(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+    kolson_stealth_promote();
+    kolson_stealth_install();
+    return (jint)kolson_stealth_installed();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_klnc_native_KolsonPatch_nativeStealthVisible(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+    return (jint)kolson_stealth_selftest();
 }
 
 JNIEXPORT jstring JNICALL

@@ -125,6 +125,48 @@
 .end method
 
 # ---------------------------------------------------------------------------
+# Спрятать сам обходчик от проверки "сторонние библиотеки": поднять себя в
+# RTLD_GLOBAL и подменить GOT у уже загруженных модулей. Возвращает число
+# подменённых записей (0 - прятать нечего/уже сделано).
+# ---------------------------------------------------------------------------
+.method public static stealth()I
+    .registers 2
+    invoke-static {}, Lcom/klnc/native/KolsonPatch;->loadNative()Z
+    move-result v0
+    if-nez v0, :fail
+
+    :try_start
+    invoke-static {}, Lcom/klnc/native/KolsonPatch;->nativeStealth()I
+    move-result v0
+    :try_end
+    .catch Ljava/lang/Throwable; {:try_start .. :try_end} :fail
+    return v0
+
+    :fail
+    const/4 v0, 0x0
+    return v0
+.end method
+
+# Сколько наших маркеров ещё видно в СЫРЫХ /proc/self/maps (0 - чисто).
+.method public static stealthVisible()I
+    .registers 1
+    invoke-static {}, Lcom/klnc/native/KolsonPatch;->loadNative()Z
+    move-result v0
+    if-eqz v0, :zero
+
+    :try_start
+    invoke-static {}, Lcom/klnc/native/KolsonPatch;->nativeStealthVisible()I
+    move-result v0
+    return v0
+    :try_end
+    .catch Ljava/lang/Throwable; {:try_start .. :try_end} :zero
+
+    :zero
+    const/4 v0, 0x0
+    return v0
+.end method
+
+# ---------------------------------------------------------------------------
 .method private static declared-synchronized loadNative()Z
     .registers 2
     sget-boolean v0, Lcom/klnc/native/KolsonPatch;->loaded:Z
@@ -166,4 +208,10 @@
 .end method
 
 .method private static native nativeReport()Ljava/lang/String;
+.end method
+
+.method private static native nativeStealth()I
+.end method
+
+.method private static native nativeStealthVisible()I
 .end method

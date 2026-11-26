@@ -343,3 +343,40 @@ apksigner sign --ks key.jks --out app-final.apk app-clean-aligned.apk
 `System.loadLibrary("kolson")` в `KolsonLibrary.loadKolsonLibrary` уже есть, ничего
 дописывать в smali не нужно. `repack_clean.py --check` предупреждает, если в dex
 остались ссылки на `klnc`/`kolson_patch`.
+
+## обходчик, которого не видно (`kolson_stealth.c`)
+
+Сам обходчик — это `libkolson_patch.so` (12 КБ): **файл `libkolson.so` он не
+меняет**, а находит уже загруженную библиотеку в памяти и выключает в ней 25
+проверок (`mov w0,#1; ret` / `nop`, 98 байт из 6 956 216). Обратная сторона:
+для проверки «сторонние библиотеки» наш `.so` — такой же посторонний файл, как
+любой мод, и он виден в списке модулей и в `/proc/self/maps`.
+
+`kolson_stealth.c` закрывает именно это, без записи чего-либо на диск:
+
+* `kolson_stealth_promote()` — поднимает нас в `RTLD_GLOBAL`; библиотека,
+  загруженная после нас (`libkolson.so`), при биндинге импортов `open`/`fopen`/
+  `dl_iterate_phdr` берёт наши функции (обычный PLT-interpose);
+* `kolson_stealth_install()` — для модулей, загруженных раньше нас, точечно
+  подменяет их GOT-записи на те же обёртки;
+* `open`/`open64`/`openat`/`fopen`/`fopen64` — на `/proc/self/maps` отдают
+  отфильтрованную копию (memfd), из которой выкинуты строки с нашими маркерами;
+* `dl_iterate_phdr` — не показывает наши модули в списке;
+* маркеры по умолчанию: `libklnc.so`, `libkolson_patch.so`, `libkolson.unlock`,
+  плюс `KOLSON_STEALTH_MARKS` (через `:`/пробел) для переименованных сборок.
+
+Вход со стороны Java/smali:
+
+```smali
+invoke-static {}, Lcom/klnc/native/KolsonPatch;->apply()I     # 25 проверок
+invoke-static {}, Lcom/klnc/native/KolsonPatch;->stealth()I   # спрятать себя
+```
+
+Проверки без устройства:
+
+```bash
+make stealth-test    # host: сырые maps содержат маркер -> обёртки его не отдают
+make one-test        # runtime patch == offline patch, байт в байт
+```
+
+`make stealth-test` печатает `RESULT: OK (обёртки прячут наш модуль)`.

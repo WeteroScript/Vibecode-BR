@@ -31,9 +31,9 @@ PATCHED := $(OUT)/libkolson.unlocked.so
 PATCHED_KLNC := $(OUT)/libklnc.so
 # Одна библиотека: сама грузит/находит libkolson.so и патчит её в памяти.
 ONE       := $(OUT)/libkolson_patch.so
-ONE_SRCS  := kolson_one.c kolson_patches.h
+ONE_SRCS  := kolson_one.c kolson_patches.h kolson_stealth.c kolson_stealth.h
 
-.PHONY: all patch patch-klnc one one-test verify list rt clean
+.PHONY: all patch patch-klnc one one-test stealth-test verify list rt clean
 
 all: $(OUT)/kolson_unlock
 	@if [ -n "$(NDK)" ] && [ -x "$(RT_CC)" ]; then \
@@ -52,6 +52,21 @@ $(OUT)/libkolson_unlock_rt.so: kolson_unlock_rt.c kolson_patches.h
 	@mkdir -p $(OUT)
 	$(RT_CC) -O2 -Wall -Wextra -std=gnu11 -fPIC -shared -I. \
 		-Wl,-soname,libkolson_unlock_rt.so -o $@ kolson_unlock_rt.c -llog -ldl
+
+# host-проверка самоконспирации обходчика (без устройства)
+STEALTH_HOST := $(OUT)/host/libkolson_patch.so
+STEALTH_TEST := $(OUT)/kolson_stealth_test
+
+stealth-test: $(STEALTH_TEST) $(STEALTH_HOST)
+	KOLSON_STEALTH_MARKS=libkolson_patch.so $(STEALTH_TEST) $(STEALTH_HOST) libkolson_patch
+
+$(STEALTH_HOST): kolson_stealth.c kolson_stealth.h
+	@mkdir -p $(OUT)/host
+	$(CC) $(CFLAGS) -fPIC -shared -I. -o $@ kolson_stealth.c
+
+$(STEALTH_TEST): kolson_stealth_test.c
+	@mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -I. -o $@ kolson_stealth_test.c -ldl
 
 list: $(OUT)/kolson_unlock
 	$(OUT)/kolson_unlock -i $(KOLSON_SO) --list
@@ -72,7 +87,7 @@ $(ONE): $(ONE_SRCS)
 	@mkdir -p $(OUT)
 	@if [ -x "$(RT_CC)" ]; then \
 		$(RT_CC) -O2 -Wall -Wextra -std=gnu11 -fPIC -shared -I. \
-			-Wl,-soname,libkolson_patch.so -o $@ kolson_one.c -llog -ldl; \
+			-Wl,-soname,libkolson_patch.so -o $@ kolson_one.c kolson_stealth.c -llog -ldl; \
 	else \
 		echo "note: NDK toolchain not found (set NDK= or ANDROID_NDK_HOME) - cannot build $(ONE)"; \
 		exit 1; \
@@ -84,9 +99,11 @@ one-test: $(OUT)/kolson_unlock_one_test $(PATCHED)
 	$(OUT)/kolson_unlock_one_test $(KOLSON_SO) $(PATCHED) $(OUT)/one-dump.so
 	@cmp $(OUT)/one-dump.so $(PATCHED) && echo "one-test: runtime patch == offline patch (byte-for-byte)"
 
-$(OUT)/kolson_unlock_one_test: kolson_one.c kolson_one_test.c kolson_patches.h
+$(OUT)/kolson_unlock_one_test: kolson_one.c kolson_one_test.c kolson_patches.h \
+                               kolson_stealth.c kolson_stealth.h
 	@mkdir -p $(OUT)
-	$(CC) -O2 -Wall -Wextra -DKOLSON_HOST -I. -o $@ kolson_one.c kolson_one_test.c -ldl
+	$(CC) -O2 -Wall -Wextra -DKOLSON_HOST -I. -o $@ kolson_one.c kolson_stealth.c \
+		kolson_one_test.c -ldl
 
 verify: $(OUT)/kolson_unlock
 	$(OUT)/kolson_unlock -i $(PATCHED) --verify
