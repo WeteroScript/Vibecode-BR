@@ -419,3 +419,17 @@ OK: runtime patch == offline patch, second pass: 10/0
 
 Осталось перенести на эту сборку: `weapon` (3 сайта), `core`, `tracer`,
 `crash`. Якоря для поиска — в `tools/kolson/NEW-BUILD-16.116.0.md`.
+
+## что нового в сборке 16.116.0
+
+Группы `KOLSON_PATCHES_B`: `auth` (10 слов), `weapon` (1), `dm` (4), `blob` (2) —
+всего 17 слов / 68 байт. `dm` снимает фильтр записей списка серверов
+(`minimumBuildId`, `featureMask`, `expiresAt`), `blob` — подпись
+вкомпилированного JSON серверов. Подробности: `tools/kolson/HOW-SERVER-ADDED.md`
+и `tools/kolson/NEW-BUILD-16.116.0.md`.
+
+Вспомогательные утилиты разбора (только для анализа):
+
+* `tools/kolson/xrefs.py <va>...` — ссылки на адрес в AArch64-коде (adrp+add/ldr);
+* `tools/kolson/plt_callers.py <имя>...` — кто вызывает импортируемую функцию
+  (`time`, `clock_gettime`, ...) через PLT.

@@ -183,7 +183,7 @@ int main(int argc, char **argv) {
             fprintf(stderr,
                     "usage: %s -i <lib.so> -o <out.so> [--only mod[,mod]] [-n <soname>]\n"
                     "       %s -i <lib.so> --list | --verify\n"
-                    "       modules: core,tracer,weapon,gate,sig,crash\n",
+                    "       modules: любые из --list (для 16.116.0: auth,weapon,dm,blob)\n",
                     argv[0], argv[0]);
             return 2;
         }

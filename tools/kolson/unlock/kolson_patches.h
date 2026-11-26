@@ -108,7 +108,20 @@
     X("auth", 0x02fcc80u, 0x540009e1u, KOLSON_I_NOP)                            \
     /* weapon: флаг "weapon_tamper" — геттер 0x2c927c (bti; adrp; ldr w0,[x8,#0xed0]; ret),
        оба его вызывающих (0x1f26a4, 0x1f4f34) решают, включать ли политику оружия */ \
-    X("weapon", 0x02c9284u, 0xb94ed100u, KOLSON_I_MOV_W0_ZR)
+    X("weapon", 0x02c9284u, 0xb94ed100u, KOLSON_I_MOV_W0_ZR)                       \
+    /* ---- dm: гейт самой записи сервера в 0x29bdb0 (загрузчик списка) ---------- */ \
+    /* cmp entry.minimumBuildId, 2026080701 (0x78c389bd) -> слишком новый билд    */ \
+    X("dm",     0x029c794u, 0x54000a08u, KOLSON_I_NOP)   /* b.hi -> отбраковка     */ \
+    /* cmp featureMask, #0x40 */                                                   \
+    X("dm",     0x029c79cu, 0x540009c8u, KOLSON_I_NOP)   /* b.hi -> отбраковка     */ \
+    /* диапазон low-32 от build id */                                              \
+    X("dm",     0x029c7bcu, 0x540008c3u, KOLSON_I_NOP)   /* b.lo -> отбраковка     */ \
+    /* cmp entry.expiresAt, time(NULL) */                                          \
+    X("dm",     0x029c7c4u, 0x5400088du, KOLSON_I_NOP)   /* b.le -> отбраковка     */ \
+    /* ---- blob: проверка целостности вкомпилированного списка серверов --------- */ \
+    /* 0x1fcbac(key @0x7cedc, tag @0x7ce9c, json @0x7cc9a, 0x202): истина всегда  */ \
+    X("blob",   0x01fcbacu, KOLSON_I_PACIASP, KOLSON_I_MOV_W0_1)                   \
+    X("blob",   0x01fcbb0u, 0xa9ba7bfdu,      KOLSON_I_RET)
 
 typedef struct {
     const char *module;
