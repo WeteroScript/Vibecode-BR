@@ -104,6 +104,7 @@ jobs:
           T="$ANDROID_HOME/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin"
           "$T/llvm-readelf" -d tools/kolson/unlock/build/libkolson_patch.so | grep -E 'SONAME|NEEDED'
           "$T/llvm-nm" -D --defined-only tools/kolson/unlock/build/libkolson_patch.so
+          sha256sum tools/kolson/unlock/build/libkolson_patch.so | tee patched-one.sha256
 
       - name: build arm64 runtime shim (NDK)
         run: |
@@ -125,7 +126,7 @@ jobs:
           cp tools/kolson/unlock/build/libkolson_patch.so "$staging/"
           cp tools/kolson/unlock/build/kolson_unlock "$staging/"
           cp tools/kolson/unlock/build/libkolson_unlock_rt.so "$staging/"
-          cp pristine.sha256 patched.sha256 patched-klnc.sha256 "$staging/"
+          cp pristine.sha256 patched.sha256 patched-klnc.sha256 patched-one.sha256 "$staging/"
           cp patch.log patch-klnc.log "$staging/"
           cp tools/kolson/unlock/README.md "$staging/"
           mkdir -p "$staging/smali"
@@ -180,7 +181,7 @@ jobs:
 
           ```
           EOF
-          cat pristine.sha256 patched.sha256 patched-klnc.sha256 >> "$notes"
+          cat pristine.sha256 patched.sha256 patched-klnc.sha256 patched-one.sha256 >> "$notes"
           printf '```\n' >> "$notes"
           gh release create "$tag" "$ZIP" "$SO" "$KLNC" "$ONE" \
             --title "libkolson unlocked ($tag)" \
