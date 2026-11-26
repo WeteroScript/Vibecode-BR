@@ -52,6 +52,50 @@ PATCHED_RANGES = [
 ]
 
 
+def soname_span(raw):
+    """(file_offset, length) of the DT_SONAME string, or None.
+
+    A patched copy may be renamed with `--soname` so that bionic does not
+    dedupe it against the pristine library; that edit lives in .dynstr and is
+    the only tolerated change outside the instruction patch set.
+    """
+    import struct
+    phoff, = struct.unpack_from('<Q', raw, 32)
+    phnum, = struct.unpack_from('<H', raw, 56)
+    dyn = dynsz = None
+    loads = []
+    for i in range(phnum):
+        ph = phoff + i * 56
+        t, flags, off, va, pa, fsz = struct.unpack_from('<IIQQQQ', raw, ph)
+        if t == 2:
+            dyn, dynsz = off, fsz
+        elif t == 1:
+            loads.append((va, off, fsz))
+    if dyn is None:
+        return None
+    strtab_va = strsz = soname_off = None
+    for o in range(dyn, dyn + dynsz, 16):
+        tag, val = struct.unpack_from('<qQ', raw, o)
+        if tag == 0:
+            break
+        if tag == 5:
+            strtab_va = val
+        elif tag == 10:
+            strsz = val
+        elif tag == 14:
+            soname_off = val
+    if strtab_va is None or soname_off is None:
+        return None
+    for va, off, fsz in loads:
+        if va <= strtab_va < va + fsz:
+            start = off + (strtab_va - va) + soname_off
+            end = start
+            while end < len(raw) and raw[end] != 0:
+                end += 1
+            return start, end - start + 1
+    return None
+
+
 def words(path):
     raw = open(path, 'rb').read()
     return raw
@@ -117,8 +161,15 @@ def main(argv):
         if len(want) != len(raw):
             print(f'  size differs: {len(want)} vs {len(raw)}')
             bad.append(-1)
+        allowed = list(PATCHED_RANGES)
+        for span in (soname_span(want), soname_span(raw)):
+            if span:
+                allowed.append((span[0], span[0] + span[1]))
         diffs = [i for i in range(min(len(want), len(raw))) if want[i] != raw[i]]
-        outside = [i for i in diffs if not any(lo <= i < hi for lo, hi in PATCHED_RANGES)]
+        outside = [i for i in diffs if not any(lo <= i < hi for lo, hi in allowed)]
+        sn = soname_span(raw)
+        if sn:
+            print(f'  soname  {raw[sn[0]:sn[0] + sn[1] - 1].decode(errors="replace")}')
         print(f'  {len(diffs)} differing byte(s), {len(outside)} outside the patch set')
         if outside:
             bad.extend(outside[:8])

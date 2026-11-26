@@ -99,8 +99,73 @@ static int selected(const char *module, const char *only) {
 
 enum { MODE_PATCH, MODE_LIST, MODE_VERIFY };
 
+/* rename DT_SONAME in place.  Needed when the patched copy has to live next to
+   the original name: bionic dedupes already-loaded libraries by soname, so a
+   file called libkolson.so with soname libkolson.so can silently resolve to the
+   pristine library that the launcher loaded first. */
+static int set_soname(uint8_t *buf, size_t size, const char *name) {
+    uint16_t phnum;
+    memcpy(&phnum, buf + 56, sizeof phnum);
+    uint64_t phoff;
+    memcpy(&phoff, buf + 32, sizeof phoff);
+    if (phoff + (uint64_t)phnum * 56 > size) return -1;
+
+    uint64_t dyn = 0, dynsz = 0;
+
+    /* DT_STRTAB holds a *virtual* address; PT_DYNAMIC holds a *file offset*.
+       In this ELF the two differ (the tail of .data is shifted by 0x8000), so
+       translate explicitly instead of assuming identity. */
+    for (uint16_t i = 0; i < phnum; i++) {
+        uint8_t *ph = buf + phoff + (size_t)i * 56;
+        uint32_t type;
+        memcpy(&type, ph, sizeof type);
+        if (type != 2 /* PT_DYNAMIC */) continue;
+        memcpy(&dyn, ph + 8, sizeof dyn);        /* p_offset  */
+        memcpy(&dynsz, ph + 32, sizeof dynsz);   /* p_filesz  */
+    }
+    if (!dyn || dyn + dynsz > size) return -1;
+
+    uint64_t strtab_va = 0, strsz = 0, soname_off = 0;
+    for (uint64_t o = dyn; o + 16 <= dyn + dynsz; o += 16) {
+        int64_t tag;
+        uint64_t val;
+        memcpy(&tag, buf + o, sizeof tag);
+        memcpy(&val, buf + o + 8, sizeof val);
+        if (tag == 0) break;
+        if (tag == 5  /* DT_STRTAB */) strtab_va = val;
+        if (tag == 10 /* DT_STRSZ  */) strsz = val;
+        if (tag == 14 /* DT_SONAME */) soname_off = val;
+    }
+    if (!strtab_va || !soname_off) return -2;
+
+    uint64_t strtab = 0;                          /* va -> file offset */
+    for (uint16_t i = 0; i < phnum; i++) {
+        uint8_t *ph = buf + phoff + (size_t)i * 56;
+        uint32_t type;
+        uint64_t off, va, fsz;
+        memcpy(&type, ph, sizeof type);
+        if (type != 1 /* PT_LOAD */) continue;
+        memcpy(&off, ph + 8, sizeof off);
+        memcpy(&va, ph + 16, sizeof va);
+        memcpy(&fsz, ph + 32, sizeof fsz);
+        if (strtab_va >= va && strtab_va < va + fsz) {
+            strtab = off + (strtab_va - va);
+            break;
+        }
+    }
+    if (!strtab || strtab + strsz > size || soname_off >= strsz) return -2;
+
+    char *slot = (char *)buf + strtab + soname_off;
+    size_t old = strlen(slot);
+    size_t need = strlen(name);
+    if (need > old) return -3;      /* must fit into the existing string */
+    memcpy(slot, name, need);
+    slot[need] = '\0';              /* keep the rest of .dynstr intact */
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    const char *in = NULL, *out = NULL, *only = NULL;
+    const char *in = NULL, *out = NULL, *only = NULL, *soname = NULL;
     int mode = MODE_PATCH;
 
     for (int i = 1; i < argc; i++) {
@@ -108,18 +173,18 @@ int main(int argc, char **argv) {
         if (!strcmp(a, "-i") && i + 1 < argc)            in = argv[++i];
         else if (!strcmp(a, "-o") && i + 1 < argc)       out = argv[++i];
         else if (!strcmp(a, "--only") && i + 1 < argc)   only = argv[++i];
+        else if ((!strcmp(a, "-n") || !strcmp(a, "--soname")) && i + 1 < argc)
+                                                         soname = argv[++i];
         else if (!strcmp(a, "--list"))                   mode = MODE_LIST;
         else if (!strcmp(a, "--verify"))                 mode = MODE_VERIFY;
         else if (!strcmp(a, "--force"))                  g_force = 1;
         else if (!strcmp(a, "-v"))                       g_verbose = 1;
         else {
             fprintf(stderr,
-                    "usage: %s -i <lib.so> [-o <out.so>] [--only mod[,mod]]\n"
+                    "usage: %s -i <lib.so> -o <out.so> [--only mod[,mod]] [-n <soname>]\n"
                     "       %s -i <lib.so> --list | --verify\n"
-                    "       modules: ", argv[0], argv[0]);
-            for (int k = 0; k < KOLSON_PATCH_COUNT; k++)
-                fprintf(stderr, "%s%s", k ? "," : "", kKolsonPatches[k].module);
-            fprintf(stderr, "\n");
+                    "       modules: core,tracer,weapon,gate,sig,crash\n",
+                    argv[0], argv[0]);
             return 2;
         }
     }
@@ -194,6 +259,16 @@ int main(int argc, char **argv) {
                         "(use --force only if you know the build differs)\n", mismatch);
         free(buf);
         return 3;
+    }
+
+    if (soname) {
+        int rc = set_soname(buf, size, soname);
+        if (rc) {
+            fprintf(stderr, "kolson_unlock: cannot set DT_SONAME (%d)\n", rc);
+            free(buf);
+            return 4;
+        }
+        printf("DT_SONAME -> %s\n", soname);
     }
 
     spit(out, buf, size);

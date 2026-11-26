@@ -73,13 +73,24 @@ jobs:
             | tee patch.log
           sha256sum "$RUNNER_TEMP/libkolson.unlocked.so" | tee patched.sha256
 
+      # Same patches, unique DT_SONAME: needed when the stock libkolson.so may
+      # already be mapped before our copy (bionic dedupes by SONAME, so a copy
+      # that still says libkolson.so would never run its JNI_OnLoad).
+      - name: patch (unique soname, libklnc.so)
+        run: |
+          tools/kolson/unlock/build/kolson_unlock -i "$KOLSON_SO" \
+            -o "$RUNNER_TEMP/libklnc.so" -n libklnc.so -v \
+            | tee patch-klnc.log
+          sha256sum "$RUNNER_TEMP/libklnc.so" | tee patched-klnc.sha256
+
       - name: audit patched library
         run: |
-          tools/kolson/unlock/build/kolson_unlock \
-            -i "$RUNNER_TEMP/libkolson.unlocked.so" --verify
           python3 -m pip install --quiet --disable-pip-version-check capstone pyelftools
-          python3 tools/kolson/unlock/kolson_verify.py \
-            "$KOLSON_SO" "$RUNNER_TEMP/libkolson.unlocked.so"
+          for f in libkolson.unlocked.so libklnc.so; do
+            echo "== $f"
+            tools/kolson/unlock/build/kolson_unlock -i "$RUNNER_TEMP/$f" --verify
+            python3 tools/kolson/unlock/kolson_verify.py "$KOLSON_SO" "$RUNNER_TEMP/$f"
+          done
 
       - name: build arm64 runtime shim (NDK)
         run: |
@@ -97,13 +108,19 @@ jobs:
           staging="$RUNNER_TEMP/kolson-unlocked"
           mkdir -p "$staging"
           cp "$RUNNER_TEMP/libkolson.unlocked.so" "$staging/"
+          cp "$RUNNER_TEMP/libklnc.so" "$staging/"
           cp tools/kolson/unlock/build/kolson_unlock "$staging/"
           cp tools/kolson/unlock/build/libkolson_unlock_rt.so "$staging/"
-          cp pristine.sha256 patched.sha256 patch.log "$staging/"
+          cp pristine.sha256 patched.sha256 patched-klnc.sha256 "$staging/"
+          cp patch.log patch-klnc.log "$staging/"
           cp tools/kolson/unlock/README.md "$staging/"
+          mkdir -p "$staging/smali"
+          cp tools/kolson/unlock/smali/NativeLoader.smali tools/kolson/unlock/smali/README.md \
+            tools/kolson/unlock/smali/check_smali.py "$staging/smali/"
           ( cd "$staging" && zip -9 -r kolson-unlocked.zip . )
           echo "ZIP=$staging/kolson-unlocked.zip" >> "$GITHUB_ENV"
           echo "SO=$staging/libkolson.unlocked.so" >> "$GITHUB_ENV"
+          echo "KLNC=$staging/libklnc.so" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         if: ${{ !inputs.tag_only }}
@@ -119,6 +136,22 @@ jobs:
         run: |
           tag="${{ inputs.release_tag }}"
           [ -n "$tag" ] || tag="kolson-unlock-${GITHUB_RUN_NUMBER}"
-          gh release create "$tag" "$ZIP" "$SO" \
+          notes="$RUNNER_TEMP/notes.md"
+          cat > "$notes" <<'EOF'
+          25 kill-switches removed. The two .so files are the same build with a
+          different DT_SONAME:
+
+          - libkolson.unlocked.so - SONAME libkolson.so. Load it before anything
+            else; later System.loadLibrary("kolson") calls then reuse this copy.
+          - libklnc.so - SONAME libklnc.so. Use it when the stock libkolson.so may
+            already be mapped: bionic dedupes by SONAME, so a copy that still says
+            libkolson.so would never run its own JNI_OnLoad. Load it with
+            System.load("/data/local/tmp/libklnc.so") or ship it as
+            lib/arm64-v8a/libklnc.so.
+
+          sha256: patched.sha256 / patched-klnc.sha256 (also inside the archive).
+          smali loader: smali/NativeLoader.smali, notes in smali/README.md.
+          EOF
+          gh release create "$tag" "$ZIP" "$SO" "$KLNC" \
             --title "libkolson unlocked ($tag)" \
-            --notes "libkolson.unlocked.so (25 kill-switches) + host patcher + arm64 runtime shim. sha256 in patched.sha256 inside the archive."
+            --notes-file "$notes"

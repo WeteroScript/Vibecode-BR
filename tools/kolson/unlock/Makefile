@@ -3,6 +3,7 @@
 #   make                -> build/kolson_unlock (host) and, if an NDK is found,
 #                          build/libkolson_unlock_rt.so (arm64-v8a)
 #   make patch          -> build/libkolson.unlocked.so from ../../libkolson.so
+#   make patch-klnc     -> build/libklnc.so: same patches, SONAME libklnc.so
 #   make verify         -> audit the patched library
 #   make clean
 #
@@ -22,8 +23,12 @@ RT_TOOLCHAIN := $(NDK)/toolchains/llvm/prebuilt/linux-x86_64/bin
 RT_CC        := $(RT_TOOLCHAIN)/aarch64-linux-android$(NDK_API)-clang
 
 PATCHED := $(OUT)/libkolson.unlocked.so
+# Второй артефакт: те же патчи, но с уникальным SONAME. Нужен, когда оригинал
+# libkolson.so мог быть загружен раньше нашей копии - иначе bionic схлопнет их
+# по DT_SONAME и JNI_OnLoad патченной копии не выполнится.
+PATCHED_KLNC := $(OUT)/libklnc.so
 
-.PHONY: all patch verify list rt clean
+.PHONY: all patch patch-klnc verify list rt clean
 
 all: $(OUT)/kolson_unlock
 	@if [ -n "$(NDK)" ] && [ -x "$(RT_CC)" ]; then \
@@ -48,6 +53,9 @@ list: $(OUT)/kolson_unlock
 
 patch: $(OUT)/kolson_unlock
 	$(OUT)/kolson_unlock -i $(KOLSON_SO) -o $(PATCHED) -v
+
+patch-klnc: $(OUT)/kolson_unlock
+	$(OUT)/kolson_unlock -i $(KOLSON_SO) -o $(PATCHED_KLNC) -n libklnc.so -v
 
 verify: $(OUT)/kolson_unlock
 	$(OUT)/kolson_unlock -i $(PATCHED) --verify

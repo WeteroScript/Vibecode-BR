@@ -5,7 +5,7 @@
 
 | способ | что делает | когда использовать |
 |---|---|---|
-| **offline** `kolson_unlock` | правит 25 слов прямо в `.so`, на выходе `libkolson.unlocked.so`, побайтово совпадает по размеру с оригиналом | замена файла в APK / `lib/arm64-v8a/` |
+| **offline** `kolson_unlock` | правит 25 слов прямо в `.so`, на выходе `libkolson.unlocked.so` (или `libklnc.so` с ключом `-n`), размер байт в байт как у оригинала | замена файла в APK / `lib/arm64-v8a/` |
 | **runtime** `libkolson_unlock_rt.so` | конструктор находит уже замапленный `libkolson.so`, валидирует слова, патчит через `mprotect(rwx)`, сбрасывает i-cache, возвращает `r-x` | оригинал на диске не трогаем, `LD_PRELOAD` / инжект |
 
 Оба читают одну таблицу — `kolson_patches.h`. Точка входа одна: если слово на
@@ -39,9 +39,29 @@
 cd tools/kolson/unlock
 make                      # build/kolson_unlock (+ arm64 shim, если найден NDK)
 make list                 # показать 23 сайта и их слова в вашем билде
-make patch                # build/libkolson.unlocked.so
+make patch                # build/libkolson.unlocked.so (SONAME libkolson.so)
+make patch-klnc           # build/libklnc.so (те же патчи, SONAME libklnc.so)
 make verify               # аудит: стабы + дифф «ничего лишнего не изменено»
 ```
+
+### два артефакта и SONAME
+
+`bionic` опознаёт библиотеку по `DT_SONAME`, поэтому одна и та же патченная
+сборка отдаётся в двух вариантах:
+
+| файл | SONAME | когда брать |
+|---|---|---|
+| `libkolson.unlocked.so` | `libkolson.so` | грузим **первыми**; все последующие `System.loadLibrary("kolson")` вернут уже наше отображение |
+| `libklnc.so` | `libklnc.so` | если стоковая `libkolson.so` могла быть замаплена раньше; тогда `System.load("/data/local/tmp/libklnc.so")` даёт отдельное отображение и свой `JNI_OnLoad` |
+
+```bash
+./kolson_unlock -i libkolson.so -o libklnc.so -n libklnc.so -v
+readelf -d libklnc.so | grep SONAME        # libklnc.so
+```
+
+Строка в `.dynstr` переписывается только если новое имя не длиннее старого
+(`libklnc.so` короче `libkolson.so`), остальные `NEEDED` не страдают.
+Готовый smali-загрузчик: `smali/NativeLoader.smali` (+ `smali/README.md`).
 
 NDK для рантайм-шима:
 
