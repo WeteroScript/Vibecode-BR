@@ -155,6 +155,35 @@ def main(argv):
                 bad.append(va)
             print(f'  {va:#010x} {"NOP_OK" if w == NOP else "LIVE":8s} {text(va)}')
 
+    # DT_SONAME must be a single, exactly terminated string: renaming with -n
+    # overwrites the old name in place, and a stray NUL there would produce a
+    # truncated/empty soname in the dynamic section.
+    print('== dynamic section')
+    for tag in elf.iter_section_by_name('.dynamic') if False else []:
+        pass
+    dynamic = elf.get_section_by_name('.dynamic')
+    sonames = [t.soname for t in dynamic.iter_tags() if t.entry.d_tag == 'DT_SONAME']
+    needed = [t.needed for t in dynamic.iter_tags() if t.entry.d_tag == 'DT_NEEDED']
+    if sonames:
+        print(f'  SONAME {sonames[0]}')
+        if not sonames[0] or sonames[0] != sonames[0].strip('\x00'):
+            print('  malformed DT_SONAME')
+            bad.append(-2)
+    else:
+        print('  SONAME (none)')
+    print(f'  NEEDED {len(needed)}: ' + ', '.join(needed))
+    if len(needed) and not all(needed):
+        print('  empty NEEDED entry - .dynstr was clobbered')
+        bad.append(-3)
+    span = soname_span(raw)
+    if span:
+        import struct as _s
+        nxt = raw[span[0] + span[1]]
+        if nxt == 0:
+            print('  .dynstr: empty string right after the soname slot '
+                  '(leftover from a shorter previous name) - harmless')
+            print('           rebuild with a pristine copy if readelf complains')
+
     if pristine:
         print('== diff vs pristine')
         want = open(pristine, 'rb').read()

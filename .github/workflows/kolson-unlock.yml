@@ -149,9 +149,12 @@ jobs:
             System.load("/data/local/tmp/libklnc.so") or ship it as
             lib/arm64-v8a/libklnc.so.
 
-          sha256: patched.sha256 / patched-klnc.sha256 (also inside the archive).
           smali loader: smali/NativeLoader.smali, notes in smali/README.md.
+
+          ```
           EOF
+          cat pristine.sha256 patched.sha256 patched-klnc.sha256 >> "$notes"
+          printf '```\n' >> "$notes"
           gh release create "$tag" "$ZIP" "$SO" "$KLNC" \
             --title "libkolson unlocked ($tag)" \
             --notes-file "$notes"
