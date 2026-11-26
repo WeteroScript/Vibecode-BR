@@ -258,8 +258,50 @@ int main(int argc, char **argv) {
                               p->module, p->va, p->expect, p->replace);
     }
 
+    /* ---- блобы: куски кода, которые надо записать целиком ------------------ */
+    const kolson_blob_t *blobs = kKolsonBuilds[build].blobs;
+    const int nblobs = kKolsonBuilds[build].nblobs;
+    int nblobs_total = 0;
+    for (int i = 0; i < nblobs; i++) {
+        const kolson_blob_t *b = &blobs[i];
+        if (!b->len || !b->data) continue;
+        if (only && !strstr(only, b->name)) continue;
+        nblobs_total++;
+        if ((size_t)b->va + b->len > size) {
+            fprintf(stderr, "error: blob %s вне образа\n", b->name);
+            mismatch++;
+            continue;
+        }
+        const unsigned char *cur = buf + b->va;
+        int same = memcmp(cur, b->data, b->len) == 0;
+        int zero = 1;
+        for (unsigned k = 0; k < b->len; k++) if (cur[k]) { zero = 0; break; }
+
+        if (mode == MODE_LIST) {
+            printf("blob    %#010x  %u Б  %-6s %s\n", b->va, b->len, b->name,
+                   same ? "[already]" : zero ? "" : "[MISMATCH]");
+            if (!same && !zero) mismatch++;
+            continue;
+        }
+        if (mode == MODE_VERIFY) {
+            if (same) skipped++;
+            else if (!zero) mismatch++;
+            continue;
+        }
+        if (same) { skipped++; if (g_verbose) printf("skip blob %#x (already)\n", b->va); continue; }
+        if (!zero) {
+            fprintf(stderr, "%s%#010x (blob %s): регион не нулевой\n",
+                    g_force ? "warn: " : "error: ", b->va, b->name);
+            mismatch++;
+            if (!g_force) continue;
+        }
+        memcpy(buf + b->va, b->data, b->len);
+        applied += 1;                    /* блоб считаем одним сайтом */
+        if (g_verbose) printf("patch blob %-6s %#010x %u Б\n", b->name, b->va, b->len);
+    }
+
     if (mode == MODE_LIST) {
-        printf("\n%d sites, %d unexpected%s\n", nsites, mismatch,
+        printf("\n%d sites, %d unexpected%s\n", nsites + nblobs_total, mismatch,
                mismatch ? " (other build? use --force)" : "");
         free(buf);
         return mismatch ? 3 : 0;

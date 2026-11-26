@@ -23,6 +23,7 @@ int kolson_patch_image(uintptr_t base, int *patched, int *failed);
 int kolson_patch_image_sized(uintptr_t base, size_t size, int *patched, int *failed);
 const char *kolson_build_name(void);
 int kolson_site_count(void);
+unsigned kolson_blob_bytes(void);
 
 static unsigned char *slurp(const char *path, size_t *len) {
     FILE *f = fopen(path, "rb");
@@ -71,8 +72,10 @@ int main(int argc, char **argv) {
     size_t diff = 0;
     for (size_t i = 0; i < plen; i++)
         if (img[i] != file[i]) diff++;
-    printf("bytes changed vs pristine: %zu (<= %d Б: %d слов)\n", diff, want * 4, want);
-    if (diff == 0 || diff > (size_t)want * 4) { printf("FAIL: diff out of range\n"); bad++; }
+    size_t allowed = (size_t)want * 4 + kolson_blob_bytes();
+    printf("bytes changed vs pristine: %zu (<= %zu Б: %d слов + %u Б пейлоада)\n",
+           diff, allowed, want, kolson_blob_bytes());
+    if (diff == 0 || diff > allowed) { printf("FAIL: diff out of range\n"); bad++; }
 
     if (argc > 2) {
         size_t elen = 0;

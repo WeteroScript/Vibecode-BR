@@ -41,6 +41,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "../payload/hello_blob.h"
+
 /* AArch64 encodings used below */
 #define KOLSON_I_RET            0xd65f03c0u  /* ret                */
 #define KOLSON_I_MOV_W0_ZR      0x2a1f03e0u  /* mov w0, wzr        */
@@ -121,7 +123,11 @@
     /* ---- blob: проверка целостности вкомпилированного списка серверов --------- */ \
     /* 0x1fcbac(key @0x7cedc, tag @0x7ce9c, json @0x7cc9a, 0x202): истина всегда  */ \
     X("blob",   0x01fcbacu, KOLSON_I_PACIASP, KOLSON_I_MOV_W0_1)                   \
-    X("blob",   0x01fcbb0u, 0xa9ba7bfdu,      KOLSON_I_RET)
+    X("blob",   0x01fcbb0u, 0xa9ba7bfdu,      KOLSON_I_RET)                        \
+    /* ---- hello: детур JNI_OnLoad -> пейлоад в код-пещере 0xa8f5c --------------- */ \
+    /* при загрузке библиотеки показываем "Library Loaded" (пейлоад собирает     */ \
+    /* tools/kolson/payload/build.py, байты - в ../payload/hello_blob.h)         */ \
+    X("hello",  KOLSON_HELLO_HOOK, KOLSON_HELLO_EXPECT, KOLSON_HELLO_WORD)
 
 typedef struct {
     const char *module;
@@ -135,6 +141,20 @@ static const kolson_patch_t kKolsonSitesA[] = { KOLSON_PATCHES_A(KOLSON_X) };
 static const kolson_patch_t kKolsonSitesB[] = { KOLSON_PATCHES_B(KOLSON_X) };
 #undef KOLSON_X
 
+/* Блобы - куски кода/данных, которые надо записать целиком (не одно слово).
+   Регион должен быть нулевым в оригинале (проверяется) - иначе не пишем. */
+typedef struct {
+    const char          *name;
+    unsigned             va;
+    const unsigned char *data;
+    unsigned             len;
+} kolson_blob_t;
+
+static const kolson_blob_t kKolsonBlobsA[] = { { 0, 0, 0, 0 } };
+static const kolson_blob_t kKolsonBlobsB[] = {
+    { "hello", KOLSON_HELLO_VA, kKolsonHello, KOLSON_HELLO_SIZE },
+};
+
 #define KOLSON_N(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 /* Сборка узнаётся по одному слову в характерном месте: ни один сайт не
@@ -145,13 +165,17 @@ typedef struct {
     unsigned    probe_expect;
     const kolson_patch_t *sites;
     int         count;
+    const kolson_blob_t  *blobs;
+    int         nblobs;
 } kolson_build_t;
 
 static const kolson_build_t kKolsonBuilds[] = {
     /* probe - слово, которое мы НЕ патчим: иначе повторный прогон на уже
        пропатченном образе не узнает сборку */
-    { "KOLSON_6 (6 956 216 B)",  0x0166c60u, 0x910003fdu, kKolsonSitesA, KOLSON_N(kKolsonSitesA) },
-    { "16.116.0 (8 609 952 B)",  0x02fcc84u, 0x2a1f03f3u, kKolsonSitesB, KOLSON_N(kKolsonSitesB) },
+    { "KOLSON_6 (6 956 216 B)",  0x0166c60u, 0x910003fdu, kKolsonSitesA, KOLSON_N(kKolsonSitesA),
+      kKolsonBlobsA, KOLSON_N(kKolsonBlobsA) },
+    { "16.116.0 (8 609 952 B)",  0x02fcc84u, 0x2a1f03f3u, kKolsonSitesB, KOLSON_N(kKolsonSitesB),
+      kKolsonBlobsB, KOLSON_N(kKolsonBlobsB) },
 };
 #define KOLSON_BUILD_COUNT KOLSON_N(kKolsonBuilds)
 

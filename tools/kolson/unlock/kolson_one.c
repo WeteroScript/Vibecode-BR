@@ -125,6 +125,36 @@ static int patch_group(uintptr_t base, unsigned va, const uint32_t *expect,
     return 0;
 }
 
+
+/* ------------------------------------------------------------- блобы целиком */
+
+static int patch_blob(uintptr_t base, const kolson_blob_t *b) {
+    unsigned char *t = (unsigned char *)(base + b->va);
+    if (memcmp(t, b->data, b->len) == 0) return 1;            /* уже на месте */
+    for (unsigned i = 0; i < b->len; i++)
+        if (t[i]) {
+            LOGE("blob %s: байт %#x на +%#x не нулевой", b->name, t[i], b->va + i);
+            return -1;
+        }
+
+    const long page = sysconf(_SC_PAGESIZE);
+    uintptr_t page0 = (uintptr_t)t & ~(uintptr_t)(page - 1);
+    uintptr_t page1 = ((uintptr_t)t + b->len - 1) & ~(uintptr_t)(page - 1);
+
+    for (uintptr_t pg = page0; pg <= page1; pg += (uintptr_t)page)
+        if (mprotect((void *)pg, (size_t)page, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+            LOGE("mprotect rwx %p failed (blob %s)", (void *)pg, b->name);
+            return -1;
+        }
+
+    memcpy(t, b->data, b->len);
+    dcache_ivac((uintptr_t)t, (uintptr_t)t + b->len);
+
+    for (uintptr_t pg = page0; pg <= page1; pg += (uintptr_t)page)
+        mprotect((void *)pg, (size_t)page, PROT_READ | PROT_EXEC);
+    return 0;
+}
+
 /* --------------------------------------------------- весь набор по таблице */
 
 int kolson_patch_image_sized(uintptr_t base, size_t size, int *patched, int *failed) {
@@ -155,6 +185,15 @@ int kolson_patch_image_sized(uintptr_t base, size_t size, int *patched, int *fai
         else bad += group;
         i += group;
     }
+    const kolson_blob_t *blobs = kKolsonBuilds[g_build].blobs;
+    const int nblobs = kKolsonBuilds[g_build].nblobs;
+    for (int i = 0; i < nblobs; i++) {
+        if (!blobs[i].len || !blobs[i].data) continue;
+        int rc = patch_blob(base, &blobs[i]);
+        if (rc >= 0) ok += 1;      /* блоб считаем одним сайтом */
+        else         bad += 1;
+    }
+
     if (patched) *patched = ok;
     if (failed)  *failed = bad;
     return bad == 0 ? 0 : -1;
@@ -168,8 +207,18 @@ const char *kolson_build_name(void) {
     return g_build >= 0 ? kKolsonBuilds[g_build].name : "(unknown)";
 }
 
+unsigned kolson_blob_bytes(void) {
+    unsigned n = 0;
+    if (g_build < 0) return 0;
+    const kolson_blob_t *b = kKolsonBuilds[g_build].blobs;
+    for (int i = 0; i < kKolsonBuilds[g_build].nblobs; i++)
+        if (b[i].len && b[i].data) n += b[i].len;
+    return n;
+}
+
 int kolson_site_count(void) {
-    return g_build >= 0 ? kKolsonBuilds[g_build].count : 0;
+    if (g_build < 0) return 0;
+    return kKolsonBuilds[g_build].count + kKolsonBuilds[g_build].nblobs;
 }
 
 #if defined(KOLSON_ANDROID)
@@ -271,6 +320,7 @@ __attribute__((constructor)) static void kolson_ctor(void) {
 int kolson_patch_image_sized(uintptr_t base, size_t size, int *patched, int *failed);
 const char *kolson_build_name(void);
 int kolson_site_count(void);
+unsigned kolson_blob_bytes(void);
 
 /* Экспортируем методы обычными JNI-именами: класс не нужно искать через
    FindClass (а значит, нет зависимости от ClassLoader и от момента, когда

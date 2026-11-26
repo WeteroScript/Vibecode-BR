@@ -42,7 +42,7 @@ all: $(OUT)/kolson_unlock
 		echo "note: no NDK found (set NDK= or ANDROID_NDK_HOME) - skipping runtime shim"; \
 	fi
 
-$(OUT)/kolson_unlock: kolson_unlock.c kolson_patches.h
+$(OUT)/kolson_unlock: kolson_unlock.c kolson_patches.h ../payload/hello_blob.h
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -I. -o $@ kolson_unlock.c
 
@@ -73,7 +73,7 @@ list: $(OUT)/kolson_unlock
 
 patch: $(PATCHED)
 
-$(PATCHED): $(OUT)/kolson_unlock
+$(PATCHED): $(OUT)/kolson_unlock kolson_patches.h ../payload/hello_blob.h
 	$(OUT)/kolson_unlock -i $(KOLSON_SO) -o $@ -v
 
 patch-klnc: $(PATCHED_KLNC)
@@ -100,7 +100,8 @@ one-test: $(OUT)/kolson_unlock_one_test $(PATCHED)
 	@cmp $(OUT)/one-dump.so $(PATCHED) && echo "one-test: runtime patch == offline patch (byte-for-byte)"
 
 $(OUT)/kolson_unlock_one_test: kolson_one.c kolson_one_test.c kolson_patches.h \
-                               kolson_stealth.c kolson_stealth.h
+                               kolson_stealth.c kolson_stealth.h \
+                               ../payload/hello_blob.h
 	@mkdir -p $(OUT)
 	$(CC) -O2 -Wall -Wextra -DKOLSON_HOST -I. -o $@ kolson_one.c kolson_stealth.c \
 		kolson_one_test.c -ldl

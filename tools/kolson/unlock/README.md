@@ -430,6 +430,8 @@ OK: runtime patch == offline patch, second pass: 10/0
 
 Вспомогательные утилиты разбора (только для анализа):
 
+* `tools/kolson/PAYLOAD-LOADED.md` — индикатор загрузки («Library Loaded»): детур `JNI_OnLoad` -> пейлоад в код-пещере `0xa8f5c`;
+* `tools/kolson/payload/build.py` — сборка пейлоада (keystone) -> `hello_blob.h`;
 * `tools/kolson/xrefs.py <va>...` — ссылки на адрес в AArch64-коде (adrp+add/ldr);
 * `tools/kolson/plt_callers.py <имя>...` — кто вызывает импортируемую функцию
   (`time`, `clock_gettime`, ...) через PLT.

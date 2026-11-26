@@ -328,3 +328,14 @@ bl time ; cmp x26, x0 ; b.le -> отбраковка ; expiresAt уже прош
 прогон `17/0`; `--verify` → 0 unexpected; `stealth-test` → OK.
 
 Полное описание пути сервера в список — `tools/kolson/HOW-SERVER-ADDED.md`.
+
+## группа `hello`: индикатор загрузки
+
+`0x3a8684` (вход `JNI_OnLoad`) перекрыт переходом в пещеру `0xa8f5c`, где лежит
+пейлоад на 952 байта: он показывает тост «KOLSON: Library Loaded» и пишет
+строки в logcat под тегом `KOLSON`. Собирается `tools/kolson/payload/build.py`
+(keystone), байты лежат в `tools/kolson/payload/hello_blob.h`. Подробности —
+`tools/kolson/PAYLOAD-LOADED.md`.
+
+Итого по сборке 16.116.0: 19 сайтов (18 слов + блоб), 904 байта отличий от
+оригинала, runtime == offline побайтово.
