@@ -309,3 +309,37 @@ cat audit.txt
 по фрагментам слов; затем те же поиски в папках игры на устройстве
 (`/sdcard/1NEIZZIR`, `/sdcard/Android/data/com.br.top`) и в канале обновлений
 лаунчера. Отчёт пишется в файл — его можно просто переслать текстом.
+
+### чистая установка: набор `.so` как в оригинале
+
+Аудит APK показал, что баннер «Удалите сторонние библиотеки…» висит на APK, внутри
+которого лежит **`lib/arm64-v8a/libklnc.so`** — наш собственный шим, файл, которого
+в оригинальном APK нет. Лаунчер сравнивает набор библиотек с тем, что было
+изначально, и такой файл для него сторонний.
+
+Правильная (и единственная без лишних файлов) установка — замена самого
+`libkolson.so`; патченный код уже внутри него, имя и число библиотек не меняются:
+
+```bash
+# 1) что в APK лишнего (и зовёт ли dex наши имена)
+python3 repack_clean.py --check app.apk
+
+# 2) собрать чистый APK: заменить libkolson.so, выбросить libklnc.so/libkolson_patch.so
+python3 repack_clean.py --apk app.apk --so libkolson.unlocked.so -o app-clean.apk
+
+# 3) подписать (подпись всё равно пересчитывается)
+zipalign -f -p 4 app-clean.apk app-clean-aligned.apk
+apksigner sign --ks key.jks --out app-final.apk app-clean-aligned.apk
+```
+
+`libkolson.unlocked.so` берётся из релиза `kolson-unlock-v1`
+(sha256 `3ec7f6ce111511ec4d527bda89e885ebfcfea6eb8cbbdf01484d740c14241066`,
+размер совпадает с оригиналом байт в байт: 6 956 216).
+
+На телефоне шаги 2–3 делает MT Manager: открыть APK → заменить
+`lib/arm64-v8a/libkolson.so` → удалить `libklnc.so` → «Подписать».
+
+Требование: dex должен быть **оригинальным** — вызов
+`System.loadLibrary("kolson")` в `KolsonLibrary.loadKolsonLibrary` уже есть, ничего
+дописывать в smali не нужно. `repack_clean.py --check` предупреждает, если в dex
+остались ссылки на `klnc`/`kolson_patch`.
