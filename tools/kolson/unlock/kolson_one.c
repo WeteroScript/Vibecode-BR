@@ -225,13 +225,18 @@ __attribute__((constructor)) static void kolson_ctor(void) { kolson_run(NULL); }
 
 /* --------------------------------------------------------------- JNI-часть */
 
-static jint jni_apply(JNIEnv *env, jclass cls) {
+/* Экспортируем методы обычными JNI-именами: класс не нужно искать через
+   FindClass (а значит, нет зависимости от ClassLoader и от момента, когда
+   smali-класс появится в процессе). */
+JNIEXPORT jint JNICALL
+Java_com_klnc_native_KolsonPatch_nativeApply(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
     kolson_run(NULL);
     return (jint)g_patched;
 }
 
-static jint jni_apply_dir(JNIEnv *env, jclass cls, jstring dir) {
+JNIEXPORT jint JNICALL
+Java_com_klnc_native_KolsonPatch_nativeApplyDir(JNIEnv *env, jclass cls, jstring dir) {
     (void)cls;
     const char *c = dir ? (*env)->GetStringUTFChars(env, dir, NULL) : NULL;
     kolson_run(c);
@@ -239,10 +244,20 @@ static jint jni_apply_dir(JNIEnv *env, jclass cls, jstring dir) {
     return (jint)g_patched;
 }
 
-static jint jni_patched(JNIEnv *env, jclass cls) { (void)env; (void)cls; return (jint)g_patched; }
-static jint jni_failed(JNIEnv *env, jclass cls)  { (void)env; (void)cls; return (jint)g_failed; }
+JNIEXPORT jint JNICALL
+Java_com_klnc_native_KolsonPatch_nativePatched(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+    return (jint)g_patched;
+}
 
-static jstring jni_report(JNIEnv *env, jclass cls) {
+JNIEXPORT jint JNICALL
+Java_com_klnc_native_KolsonPatch_nativeFailed(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+    return (jint)g_failed;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_klnc_native_KolsonPatch_nativeReport(JNIEnv *env, jclass cls) {
     (void)cls;
     char buf[512];
     snprintf(buf, sizeof buf, "patched=%d failed=%d base=%p path=%s",
@@ -250,26 +265,11 @@ static jstring jni_report(JNIEnv *env, jclass cls) {
     return (*env)->NewStringUTF(env, buf);
 }
 
-static const JNINativeMethod kMethods[] = {
-    { "nativeApply",    "()I",                  (void *)jni_apply     },
-    { "nativeApplyDir", "(Ljava/lang/String;)I", (void *)jni_apply_dir },
-    { "nativePatched",  "()I",                  (void *)jni_patched   },
-    { "nativeFailed",   "()I",                  (void *)jni_failed    },
-    { "nativeReport",   "()Ljava/lang/String;", (void *)jni_report    },
-};
-
-static void kolson_register(JavaVM *vm) {
-    JNIEnv *env = NULL;
-    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK || !env) return;
-    jclass c = (*env)->FindClass(env, "com/klnc/native/KolsonPatch");
-    if (!c) { (*env)->ExceptionClear(env); return; }
-    (*env)->RegisterNatives(env, c, kMethods, (jint)(sizeof kMethods / sizeof kMethods[0]));
-}
-
+/* Если libkolson уже в памяти - патчим прямо здесь, до первого нативного
+   вызова приложения. Если нет - сделаем это из nativeApply()/конструктора. */
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
-    (void)reserved;
-    kolson_run(NULL);       /* если libkolson уже загружена - патчим сейчас */
-    kolson_register(vm);
+    (void)vm; (void)reserved;
+    kolson_run(NULL);
     return JNI_VERSION_1_6;
 }
 
