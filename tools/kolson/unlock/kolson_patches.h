@@ -19,6 +19,14 @@
  *   tracer 0x170528  inotify tracer-watch spawner -> mov w0,wzr ; ret
  *          0x170638  watch thread body          -> mov w0,wzr ; ret
  *   weapon 0x2129cc  weapon_tamper cached flag -> always 0
+ *          0x212b60  digest check #1 (weapons-JSON pointer)   -> fall through
+ *          0x212b94  digest check #2 (weapon table pointer)  -> fall through
+ *
+ * Note on the weapon path: 0x2129cc is only a getter (two callers, both read
+ * it into the flag accumulator).  The install-vs-abort decision that actually
+ * matters is the pair at 0x212b60 / 0x212b94 - cbnz to the abort label - so
+ * those are neutralised too, and the whole KOLSON_WEAPON handler completes
+ * instead of leaving 0x6ba118/0x6ba120 half-initialised.
  *   gate   0x243bb4  "is the game lib ours"    -> return 1 (ok)
  *   sig    0x244278..0x2443dc  18-RVA fingerprint table + 5 identity
  *                    constants in 0x243efc -> all b.ne/tbz/cbnz nop'd,
@@ -49,6 +57,8 @@
     X("tracer", 0x017063cu, 0xa9ba7bfdu,        KOLSON_I_RET)                       \
     /* ---- weapon: weapon_tamper flag ------------------------------------------- */\
     X("weapon", 0x02129ccu, 0xb9411100u,        KOLSON_I_MOV_W0_ZR)                 \
+    X("weapon", 0x0212b60u, 0xb5fff628u,        KOLSON_I_NOP)   /* cbnz -> abort     */\
+    X("weapon", 0x0212b94u, 0xb5fff488u,        KOLSON_I_NOP)   /* cbnz -> abort     */\
     /* ---- gate: "client lib present / ours" ------------------------------------ */\
     X("gate",   0x0243bb4u, KOLSON_I_PACIASP,   KOLSON_I_MOV_W0_1)                  \
     X("gate",   0x0243bb8u, 0xd10343ffu,        KOLSON_I_RET)                       \

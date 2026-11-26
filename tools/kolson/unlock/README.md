@@ -5,7 +5,7 @@
 
 | способ | что делает | когда использовать |
 |---|---|---|
-| **offline** `kolson_unlock` | правит 23 слова прямо в `.so`, на выходе `libkolson.unlocked.so`, побайтово совпадает по размеру с оригиналом | замена файла в APK / `lib/arm64-v8a/` |
+| **offline** `kolson_unlock` | правит 25 слов прямо в `.so`, на выходе `libkolson.unlocked.so`, побайтово совпадает по размеру с оригиналом | замена файла в APK / `lib/arm64-v8a/` |
 | **runtime** `libkolson_unlock_rt.so` | конструктор находит уже замапленный `libkolson.so`, валидирует слова, патчит через `mprotect(rwx)`, сбрасывает i-cache, возвращает `r-x` | оригинал на диске не трогаем, `LD_PRELOAD` / инжект |
 
 Оба читают одну таблицу — `kolson_patches.h`. Точка входа одна: если слово на
@@ -19,7 +19,8 @@
 | `core` | `0x166c54` | `paciasp; stp …` | `mov w0,wzr; ret` | агрегатор проверок всегда возвращает 0 флагов |
 | `tracer` | `0x170528` | `paciasp; sub sp` | `mov w0,wzr; ret` | inotify-вотчер за `/proc` не создаётся |
 | `tracer` | `0x170638` | `paciasp; stp …` | `mov w0,wzr; ret` | тело трейсер-потока отключено |
-| `weapon` | `0x2129cc` | `ldr w0,[x8,#0x110]` | `mov w0,wzr` | кэш-флаг `weapon_tamper` всегда 0 |
+| `weapon` | `0x2129cc` | `ldr w0,[x8,#0x110]` | `mov w0,wzr` | геттер кэш-флага `weapon_tamper` всегда 0 |
+| `weapon` | `0x212b60`, `0x212b94` | `cbnz x8,#abort` | `nop` | дайджест-проверки оружия не уводят в abort-путь: `KOLSON_WEAPON`-хендлер доходит до конца и ставит `0x6ba118/0x6ba120` |
 | `gate` | `0x243bb4` | `paciasp; sub sp` | `mov w0,#1; ret` | «клиентская либа наша» → да |
 | `gate` | `0x244800` | `paciasp; sub sp` | `mov w0,#1; ret` | чтение команд/дайджестов → ok |
 | `sig` | `0x244278, 0x2442ac, 0x2442cc, 0x244388, 0x2443a4, 0x2443b8, 0x2443c8, 0x2443dc` | `tbz/cbnz/b.ne` | `nop` | 18-RVA таблица отпечатков + 5 identity-констант больше не могут увести в `signature_mismatch` / `command_mismatch` |

@@ -28,7 +28,7 @@ REFERENCE = [
     (0x0166c54, 0xd503233f), (0x0166c58, 0xa9ba7bfd),
     (0x0170528, 0xd503233f), (0x017052c, 0xd10103ff),
     (0x0170638, 0xd503233f), (0x017063c, 0xa9ba7bfd),
-    (0x02129cc, 0xb9411100),
+    (0x02129cc, 0xb9411100), (0x0212b60, 0xb5fff628), (0x0212b94, 0xb5fff488),
     (0x0243bb4, 0xd503233f), (0x0243bb8, 0xd10343ff),
     (0x0244800, 0xd503233f), (0x0244804, 0xd10283ff),
     (0x0244278, 0x36000c60), (0x02442ac, 0x36000ec0), (0x02442cc, 0xb5000dc8),
@@ -44,7 +44,7 @@ NOP = 0xd503201f
 
 PATCHED_RANGES = [
     (0x0166c54, 0x0166c5c), (0x0170528, 0x0170530), (0x0170638, 0x0170640),
-    (0x02129cc, 0x02129d0), (0x0243bb4, 0x0243bbc), (0x0244800, 0x0244808),
+    (0x02129cc, 0x02129d0), (0x0212b60, 0x0212b64), (0x0212b94, 0x0212b98), (0x0243bb4, 0x0243bbc), (0x0244800, 0x0244808),
     (0x0244278, 0x0244280), (0x02442ac, 0x02442b0), (0x02442cc, 0x02442d0),
     (0x0244388, 0x024438c), (0x02443a4, 0x02443a8), (0x02443b8, 0x02443bc),
     (0x02443c8, 0x02443cc), (0x02443dc, 0x02443e0),
@@ -95,11 +95,13 @@ def main(argv):
             bad.append(va)
         print(f'  {va:#010x} {state:8s} {text(va)}')
 
-    if word(0x02129cc) != 0x2a1f03e0:
-        bad.append(0x02129cc)
-        print(f'  {0x02129cc:#010x} LIVE     {text(0x02129cc)}')
-    else:
-        print(f'  {0x02129cc:#010x} STUB_OK  {text(0x02129cc)}   (weapon_tamper flag = 0)')
+    for va, want, note in ((0x02129cc, 0x2a1f03e0, 'weapon_tamper getter -> 0'),
+                           (0x0212b60, NOP, 'digest check #1 -> fall through'),
+                           (0x0212b94, NOP, 'digest check #2 -> fall through')):
+        ok = word(va) == want
+        if not ok:
+            bad.append(va)
+        print(f'  {va:#010x} {"OK" if ok else "LIVE":8s} {text(va)}   ({note})')
 
     print('== fingerprint-table branches')
     for va, _ in REFERENCE:
