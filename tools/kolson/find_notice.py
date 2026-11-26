@@ -14,6 +14,7 @@ Custom/modules и перезапустите игру" могут жить в Л
     python3 find_notice.py --ls app.apk                          # что вообще лежит в APK
     python3 find_notice.py --deep app.apk "сторонние" --xor       # все файлы + распаковка + xor
     python3 find_notice.py --deep app.apk "сторонние" --frag сторон библиотек  # по кускам
+    python3 find_notice.py --audit /sdcard/Download/"Telegram" -o audit.txt  # всё сразу
     python3 find_notice.py --net "сторонние"                  # политики с CDN лаунчера
     python3 find_notice.py --grep-dir /sdcard/1NEIZZIR "сторон"  # данные игры на устройстве
     python3 find_notice.py app.apk "сторонние" --report r.txt  # короткий отчёт файлом
@@ -512,9 +513,11 @@ def hide_apk(src, dst, needle):
 
 
 # ---------------------------------------------------- глубокий скан: всё + xor
-def blob_variants(raw, limit=200 * 1024 * 1024):
+def blob_variants(raw, limit=200 * 1024 * 1024, max_in=64 * 1024 * 1024):
     """(метка, распакованные байты) для zlib/gzip/lzma/deflate, если применимо."""
     out = [("raw", raw)]
+    if len(raw) > max_in:                 # большие .so/ассеты не пытаемся распаковывать
+        return out
     for tag, fn in (("zlib", lambda b: zlib.decompress(b)),
                     ("gzip", lambda b: gzip.decompress(b)),
                     ("lzma", lambda b: lzma.decompress(b)),
@@ -554,9 +557,15 @@ def xor_scan(raw, needle, max_key=255):
         for pat in pats:
             i = dec.find(pat)
             while i >= 0:
-                found.append((k, i))
+                lo = max(0, i - 200)
+                hi = min(len(dec), i + len(pat) + 200)
+                around = dec[lo:hi]
+                cyr = sum(1 for b in around if 0xD0 <= b <= 0xD1)
+                printable = sum(1 for b in around if 32 <= b < 127 or b >= 0x80)
+                if cyr >= 3 or (printable > len(around) * 0.95 and cyr >= 1):
+                    found.append((k, i))
                 i = dec.find(pat, i + 1)
-                if len(found) > 50:
+                if len(found) > 20:
                     return found
     return found
 
@@ -572,14 +581,19 @@ def deep_scan(path, needle, fragments=None, do_xor=False):
             if hits:
                 total += len(hits)
                 print("== %s [%s]: %d" % (name, how, len(hits)))
-                for off, enc in hits[:10]:
+                for off, enc in hits[:6]:
                     print("   +%#x [%s] %r" % (off, enc, context(blob, off, enc)))
             if fragments:
-                got = [f for f in fragments if f.lower().encode() in blob.lower()
-                       or f.lower().encode("utf-16-le") in blob.lower()]
+                if len(blob) <= 32 * 1024 * 1024:
+                    low = blob.lower()
+                    got = [f for f in fragments if f.lower().encode() in low
+                           or f.lower().encode("utf-16-le") in low]
+                else:
+                    got = [f for f in fragments if f.encode() in blob
+                           or f.encode("utf-16-le") in blob]
                 if got:
                     print("== %s [%s]: фрагменты %s" % (name, how, ", ".join(got)))
-            if do_xor:
+            if do_xor and len(blob) <= 64 * 1024 * 1024:
                 for key, off in xor_scan(blob, needle):
                     total += 1
                     print("== %s [%s]: XOR 0x%02x +%#x" % (name, how, key, off))
@@ -653,6 +667,53 @@ def grep_dir(folder, needle, max_size=64 * 1024 * 1024):
     if not total:
         print("в %s строки нет" % folder)
     return total
+
+
+def audit(target, needle="сторонние библиотеки", do_net=True):
+    """Полная проверка в один проход: APK (все байты), папки на устройстве, сеть."""
+    apks = []
+    if os.path.isdir(target):
+        for root, _d, files in os.walk(target):
+            for f in files:
+                if f.lower().endswith((".apk", ".apks", ".zip")):
+                    apks.append(os.path.join(root, f))
+    else:
+        apks = [target]
+    apks.sort()
+    print("# audit: %d архив(ов), строка %r" % (len(apks), needle))
+    for path in apks:
+        try:
+            with zipfile.ZipFile(path) as z:
+                infos = [i for i in z.infolist()
+                         if not i.filename.endswith("/") and not i.filename.startswith("META-INF/")]
+        except (OSError, zipfile.BadZipFile) as e:
+            print("\n## %s: не читается (%s)" % (path, e))
+            continue
+        names = [i.filename for i in infos]
+        top = sorted(((i.file_size, i.filename) for i in infos), reverse=True)[:12]
+        print("\n## %s" % os.path.basename(path))
+        print("   файлов: %d, 9 крупнейших: %s" % (len(names), ", ".join(
+            "%s(%.1fM)" % (n, sz / 1e6) for sz, n in top[:9])))
+        unity = any("assets/bin/Data" in n for n in names)
+        print("   unity-ассеты: %s | split: %s | dex: %d" % (
+            "да" if unity else "нет",
+            "да" if any(n.startswith("split_") for n in names) else "нет",
+            sum(1 for n in names if re.match(r"classes\d*\.dex$", n))))
+        total, _listed = deep_scan(path, needle, ["сторон", "библиотек", "перезапуст",
+                                                  "папки 1NEIZZIR", "Custom/modules"],
+                                   do_xor=True)
+        print("   ИТОГ по файлу: %d вхождений" % total)
+    # папки игры на устройстве
+    for folder in ("/sdcard/1NEIZZIR", "/sdcard/Android/data/com.br.top",
+                   "/storage/emulated/0/Android/data/com.br.top"):
+        if os.path.isdir(folder):
+            print("\n## папка %s" % folder)
+            n = grep_dir(folder, needle.split()[0] if needle else "сторон")
+            print("   вхождений: %d" % n)
+    if do_net:
+        print("\n## сеть (канал обновлений лаунчера)")
+        net_scan(needle)
+    print("\nготово")
 
 
 # ---------------------------------------------------------------------- вход
@@ -790,6 +851,35 @@ def report_dex(d, needle, mode_list=False, mode_smali=False):
 
 def main(argv):
     argv = list(argv)
+    if "--audit" in argv:
+        i = argv.index("--audit")
+        target = argv[i + 1]
+        out = argv[argv.index("-o") + 1] if "-o" in argv else "audit.txt"
+        skip = {"-o", out, target, "--audit", "--no-net"}
+        rest = [a for a in argv[1:] if not a.startswith("--") and a not in skip]
+        needle = rest[0] if rest else "сторонние библиотеки"
+        class _Tee2:
+            def __init__(self):
+                self.buf = io.StringIO()
+
+            def write(self, s):
+                sys.__stdout__.write(s)
+                self.buf.write(s)
+
+            def flush(self):
+                sys.__stdout__.flush()
+
+        tee = _Tee2()
+        sys.stdout = tee
+        try:
+            audit(target, needle, do_net="--no-net" not in argv)
+        except Exception as e:                      # чтобы отчёт всё равно сохранился
+            print("\nОШИБКА: %r" % e)
+        finally:
+            sys.stdout = sys.__stdout__
+            open(out, "w", encoding="utf-8").write(tee.buf.getvalue())
+            print("\nотчёт сохранён: %s — пришли его целиком" % out)
+        return 0
     if "--net" in argv:
         i = argv.index("--net")
         needle = argv[i + 1] if len(argv) > i + 1 and not argv[i + 1].startswith("--") \
