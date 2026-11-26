@@ -56,11 +56,15 @@ $(OUT)/libkolson_unlock_rt.so: kolson_unlock_rt.c kolson_patches.h
 list: $(OUT)/kolson_unlock
 	$(OUT)/kolson_unlock -i $(KOLSON_SO) --list
 
-patch: $(OUT)/kolson_unlock
-	$(OUT)/kolson_unlock -i $(KOLSON_SO) -o $(PATCHED) -v
+patch: $(PATCHED)
 
-patch-klnc: $(OUT)/kolson_unlock
-	$(OUT)/kolson_unlock -i $(KOLSON_SO) -o $(PATCHED_KLNC) -n libklnc.so -v
+$(PATCHED): $(OUT)/kolson_unlock
+	$(OUT)/kolson_unlock -i $(KOLSON_SO) -o $@ -v
+
+patch-klnc: $(PATCHED_KLNC)
+
+$(PATCHED_KLNC): $(OUT)/kolson_unlock
+	$(OUT)/kolson_unlock -i $(KOLSON_SO) -o $@ -n libklnc.so -v
 
 one: $(ONE)
 
@@ -76,7 +80,7 @@ $(ONE): $(ONE_SRCS)
 
 # Хост-проверка: runtime-патч в памяти должен дать ровно тот же файл, что и
 # offline-патчер. Собирается обычным cc, устройство не нужно.
-one-test: $(OUT)/kolson_unlock_one_test
+one-test: $(OUT)/kolson_unlock_one_test $(PATCHED)
 	$(OUT)/kolson_unlock_one_test $(KOLSON_SO) $(PATCHED) $(OUT)/one-dump.so
 	@cmp $(OUT)/one-dump.so $(PATCHED) && echo "one-test: runtime patch == offline patch (byte-for-byte)"
 

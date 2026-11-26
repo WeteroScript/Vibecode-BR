@@ -96,7 +96,7 @@ jobs:
       # in-memory patch produces exactly the same image as the offline patcher.
       - name: one library (host proof + NDK build)
         run: |
-          make -C tools/kolson/unlock one-test
+          KOLSON_SO="$KOLSON_SO" make -C tools/kolson/unlock one-test
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
             "ndk;${NDK_VERSION}" >/dev/null
