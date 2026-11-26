@@ -574,7 +574,11 @@ def deep_scan(path, needle, fragments=None, do_xor=False):
     """Скан ВСЕХ файлов APK: как есть, после распаковки, после однобайтового xor."""
     total = 0
     listed = []
+    seen = 0
     for name, raw in iter_blobs(path):
+        seen += 1
+        if seen % 400 == 0:
+            print("   ... %d файлов" % seen, file=sys.stderr)
         listed.append((name, len(raw)))
         for how, blob in blob_variants(raw):
             hits = search_blob(blob, needle)
@@ -593,7 +597,10 @@ def deep_scan(path, needle, fragments=None, do_xor=False):
                            or f.encode("utf-16-le") in blob]
                 if got:
                     print("== %s [%s]: фрагменты %s" % (name, how, ", ".join(got)))
-            if do_xor and len(blob) <= 64 * 1024 * 1024:
+            if do_xor and len(blob) > (8 << 20):
+                print("   (%s [%s]: %.1f МБ — xor пропущен, ищем только открытый текст)"
+                      % (name, how, len(blob) / 1e6), file=sys.stderr)
+            if do_xor and len(blob) <= (8 << 20):
                 for key, off in xor_scan(blob, needle):
                     total += 1
                     print("== %s [%s]: XOR 0x%02x +%#x" % (name, how, key, off))
@@ -610,6 +617,9 @@ CDN_URLS = (
     "https://cdnru.kolson.online/servers.json",
     "https://cdn.kolson.online/launcher-release-v7.json",
     "https://cdnru.kolson.online/launcher-release-v7.json",
+    "https://cdn.kolson.online/policy",
+    "https://cdn.kolson.online/NEIZZIR/policy",
+    "https://cdn.kolson.online/servers.json.sig",
 )
 
 
@@ -646,11 +656,16 @@ def net_scan(needle, urls=CDN_URLS, timeout=20):
     return total
 
 
-def grep_dir(folder, needle, max_size=64 * 1024 * 1024):
+def grep_dir(folder, needle, max_size=32 * 1024 * 1024, max_files=50000):
     """Ищет строку в файлах папки (данные игры/лаунчера на устройстве)."""
     total = 0
+    n = 0
     for root, _dirs, files in os.walk(folder):
         for f in files:
+            n += 1
+            if n > max_files:
+                print("   (просмотрено %d файлов, дальше не иду)" % max_files)
+                return total
             path = os.path.join(root, f)
             try:
                 if os.path.getsize(path) > max_size:
