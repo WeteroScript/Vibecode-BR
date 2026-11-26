@@ -115,6 +115,7 @@ def check(path):
     desc = None
     name = None
     methods = set()
+    acc_cached = None
     labels_defined, labels_used, catch_labels = set(), set(), set()
     prev_invoke = False
     n_insns = 0
@@ -132,6 +133,7 @@ def check(path):
             in_method = True
             toks = line.split()
             acc = toks[1:-1]
+            acc_cached = acc
             sig = toks[-1]
             name, desc = sig.split("(")
             name, desc = name, "(" + desc
@@ -143,6 +145,9 @@ def check(path):
             n_insns = 0
             continue
         if line.startswith(".end method"):
+            if registers is None and "native" in (acc_cached or []):
+                in_method = False
+                continue  # native-метод: тела нет, .registers не нужен
             if registers is None:
                 errs.append("%d: метод %s без .registers/.locals" % (ln, name + desc))
             in_method = False
