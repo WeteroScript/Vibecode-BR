@@ -105,7 +105,10 @@
     X("auth", 0x02fcc48u, 0x54000ba1u, KOLSON_I_NOP)                            \
     X("auth", 0x02fcc5cu, 0x54000b01u, KOLSON_I_NOP)                            \
     X("auth", 0x02fcc6cu, 0x54000a81u, KOLSON_I_NOP)                            \
-    X("auth", 0x02fcc80u, 0x540009e1u, KOLSON_I_NOP)
+    X("auth", 0x02fcc80u, 0x540009e1u, KOLSON_I_NOP)                            \
+    /* weapon: флаг "weapon_tamper" — геттер 0x2c927c (bti; adrp; ldr w0,[x8,#0xed0]; ret),
+       оба его вызывающих (0x1f26a4, 0x1f4f34) решают, включать ли политику оружия */ \
+    X("weapon", 0x02c9284u, 0xb94ed100u, KOLSON_I_MOV_W0_ZR)
 
 typedef struct {
     const char *module;
