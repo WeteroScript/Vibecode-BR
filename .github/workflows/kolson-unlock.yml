@@ -1,0 +1,123 @@
+name: kolson unlock
+
+# Builds the anti-tamper kill-switch toolchain and (optionally) patches the
+# library that is committed to this repo.
+#
+#   push / PR      -> build host tool, build arm64 runtime shim with the NDK,
+#                     patch, audit, upload artifacts
+#   workflow_dispatch
+#       tag_only=false, upload_release=true
+#                  -> additionally publish a GitHub Release with the patched
+#                     libkolson.unlocked.so, the patcher binary and the runtime
+#                     shim zipped (plain tag, no git tag -> private-friendly)
+#
+# Everything the job consumes lives in the repo: libkolson.so at the root and
+# tools/kolson/unlock/*.c.  No secrets, no network access beyond the NDK.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'libkolson.so'
+      - 'tools/kolson/unlock/**'
+      - '.github/workflows/kolson-unlock.yml'
+  pull_request:
+    paths:
+      - 'libkolson.so'
+      - 'tools/kolson/unlock/**'
+  workflow_dispatch:
+    inputs:
+      tag_only:
+        description: 'patch + verify only (no artifacts/release)'
+        type: boolean
+        default: false
+      upload_release:
+        description: 'publish a GitHub Release with the patched library'
+        type: boolean
+        default: false
+      release_tag:
+        description: 'release tag name (default: kolson-unlock-<run>)'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  NDK_VERSION: 26.3.11579264
+  KOLSON_SO: ${{ github.workspace }}/libkolson.so
+
+jobs:
+  unlock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: sanity - input present
+        run: |
+          test -f libkolson.so || { echo "libkolson.so missing at repo root"; exit 1; }
+          ls -l libkolson.so
+          sha256sum libkolson.so | tee pristine.sha256
+
+      - name: build host patcher
+        run: |
+          make -C tools/kolson/unlock build/kolson_unlock
+
+      - name: list kill-switches (fails if the build does not match)
+        run: tools/kolson/unlock/build/kolson_unlock -i "$KOLSON_SO" --list
+
+      - name: patch
+        run: |
+          tools/kolson/unlock/build/kolson_unlock -i "$KOLSON_SO" \
+            -o "$RUNNER_TEMP/libkolson.unlocked.so" -v \
+            | tee patch.log
+          sha256sum "$RUNNER_TEMP/libkolson.unlocked.so" | tee patched.sha256
+
+      - name: audit patched library
+        run: |
+          tools/kolson/unlock/build/kolson_unlock \
+            -i "$RUNNER_TEMP/libkolson.unlocked.so" --verify
+          python3 -m pip install --quiet --disable-pip-version-check capstone pyelftools
+          python3 tools/kolson/unlock/kolson_verify.py \
+            "$KOLSON_SO" "$RUNNER_TEMP/libkolson.unlocked.so"
+
+      - name: build arm64 runtime shim (NDK)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "ndk;${NDK_VERSION}" >/dev/null
+          NDK="$ANDROID_HOME/ndk/${NDK_VERSION}" \
+            make -C tools/kolson/unlock rt
+          "$ANDROID_HOME/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -h tools/kolson/unlock/build/libkolson_unlock_rt.so | head -20
+
+      - name: pack
+        if: ${{ !inputs.tag_only }}
+        run: |
+          staging="$RUNNER_TEMP/kolson-unlocked"
+          mkdir -p "$staging"
+          cp "$RUNNER_TEMP/libkolson.unlocked.so" "$staging/"
+          cp tools/kolson/unlock/build/kolson_unlock "$staging/"
+          cp tools/kolson/unlock/build/libkolson_unlock_rt.so "$staging/"
+          cp pristine.sha256 patched.sha256 patch.log "$staging/"
+          cp tools/kolson/unlock/README.md "$staging/"
+          ( cd "$staging" && zip -9 -r kolson-unlocked.zip . )
+          echo "ZIP=$staging/kolson-unlocked.zip" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.tag_only }}
+        with:
+          name: kolson-unlocked
+          path: ${{ env.ZIP }}
+          if-no-files-found: error
+
+      - name: publish release
+        if: ${{ inputs.upload_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.release_tag }}"
+          [ -n "$tag" ] || tag="kolson-unlock-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" "$ZIP" \
+            --title "libkolson unlocked ($tag)" \
+            --notes "patched libkolson.unlocked.so + host patcher + arm64 runtime shim; see README.md inside the archive"

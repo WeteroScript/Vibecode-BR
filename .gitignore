@@ -4,3 +4,6 @@ re/out/
 re/out2/
 *.pyc
 __pycache__/
+
+# kolson unlock build output
+tools/kolson/unlock/build/
