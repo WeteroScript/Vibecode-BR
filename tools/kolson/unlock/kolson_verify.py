@@ -52,6 +52,113 @@ PATCHED_RANGES = [
 ]
 
 
+
+# ---------------------------------------------------------------- сборка 16.116.0
+
+B_PROBE = (0x02fcc84, 0x2a1f03f3)          # слово, которое мы не патчим
+A_PROBE = (0x0166c60, 0x910003fd)
+
+# (va, было в оригинале, стало после патча, что снято)
+B_SITES = [
+    (0x02fcba4, 0x36000c20, NOP, 'auth: tbz -> skip'),
+    (0x02fcbc4, 0x36000b20, NOP, 'auth: tbz -> skip'),
+    (0x02fcbe0, 0x36000a40, NOP, 'auth: tbz -> skip'),
+    (0x02fcbf4, 0x360009a0, NOP, 'auth: tbz -> skip'),
+    (0x02fcc10, 0x360008c0, NOP, 'auth: tbz -> skip'),
+    (0x02fcc2c, 0x54000c81, NOP, 'auth: build_mismatch'),
+    (0x02fcc48, 0x54000ba1, NOP, 'auth: signature_mismatch'),
+    (0x02fcc5c, 0x54000b01, NOP, 'auth: command_unreadable'),
+    (0x02fcc6c, 0x54000a81, NOP, 'auth: command_mismatch'),
+    (0x02fcc80, 0x540009e1, NOP, 'auth: command_write_failed'),
+    (0x02c9284, 0xb94ed100, 0x2a1f03e0, 'weapon_tamper -> 0'),
+    (0x029c794, 0x54000a08, NOP, 'dm: minimumBuildId'),
+    (0x029c79c, 0x540009c8, NOP, 'dm: featureMask'),
+    (0x029c7bc, 0x540008c3, NOP, 'dm: build-id range'),
+    (0x029c7c4, 0x5400088d, NOP, 'dm: expiresAt'),
+    (0x01fcbac, 0xd503233f, 0x52800020, 'blob: verify -> mov w0,#1'),
+    (0x01fcbb0, 0xa9ba7bfd, 0xd65f03c0, 'blob: verify -> ret'),
+    (0x03a8684, 0xd503233f, None,        'hello: JNI_OnLoad -> b cave'),
+]
+B_HOOK_TARGET = 0x0a8f5c
+B_BLOB = (0x0a8f5c, '../payload/hello_blob.h')
+
+
+def load_cave(path):
+    import re, os
+    if not os.path.exists(path):
+        return None
+    return bytes(int(x, 16) for x in re.findall(r'0x([0-9a-fA-F]{2}),', open(path).read()))
+
+
+def audit_build_b(raw, pristine, md):
+    def word(va):
+        return int.from_bytes(raw[va:va + 4], 'little')
+
+    def text(va):
+        return ' '.join(f'{i.mnemonic} {i.op_str}'.strip()
+                        for i in md.disasm(raw[va:va + 8], va))
+
+    bad = []
+    print('== сборка 16.116.0: сайты')
+    for va, exp, rep, note in B_SITES:
+        got = word(va)
+        if rep is None:                       # detour: должен быть b <cave>
+            tgt = None
+            if (got >> 26) == 5:
+                off = got & 0x3FFFFFF
+                if off & 0x2000000:
+                    off -= 0x4000000
+                tgt = va + off * 4
+            ok = (tgt == B_HOOK_TARGET)
+        else:
+            ok = (got == rep)
+        if not ok:
+            bad.append(va)
+        print(f'  {va:#010x} {"OK" if ok else "LIVE":6s} {text(va):28s} ({note})')
+
+    print('== пейлоад в пещере')
+    cave = load_cave(B_BLOB[1])
+    va, _ = B_BLOB
+    if cave is None:
+        print('  (нет ../payload/hello_blob.h - пропускаю сверку байтов)')
+    else:
+        got = raw[va:va + len(cave)]
+        ok = got == cave
+        if not ok:
+            bad.append(va)
+        print(f'  {va:#010x} {"OK" if ok else "BAD":6s} {len(cave)} Б, '
+              f'{"совпадает с hello_blob.h" if ok else "не совпадает"}')
+        print(f'  занято {len(cave)} из 1028 Б пещеры')
+
+    if pristine:
+        print('== diff vs pristine')
+        want = open(pristine, 'rb').read()
+        if len(want) != len(raw):
+            print(f'  size differs: {len(want)} vs {len(raw)}')
+            bad.append(-1)
+        allowed = [(va, va + 4) for va, _, _, _ in B_SITES]
+        if cave is not None:
+            allowed.append((B_BLOB[0], B_BLOB[0] + len(cave)))
+        else:
+            allowed.append((B_BLOB[0], B_BLOB[0] + 1028))
+        diffs = [i for i in range(min(len(want), len(raw))) if want[i] != raw[i]]
+        outside = [i for i in diffs if not any(lo <= i < hi for lo, hi in allowed)]
+        print(f'  {len(diffs)} differing byte(s), {len(outside)} outside the patch set')
+        if outside:
+            bad.extend(outside[:8])
+        for va, exp, _, _ in B_SITES:
+            if word(va) != exp and word(va) not in (NOP, 0x2a1f03e0, 0x52800020, 0xd65f03c0) \
+                    and word(va) >> 26 != 5:
+                bad.append(va)
+        print(f'  reference words checked: {len(B_SITES)}')
+
+    if bad:
+        print('  проблемные адреса:', [hex(b) for b in bad[:12]])
+    print('== result:', 'FAIL' if bad else 'OK')
+    return 1 if bad else 0
+
+
+
 def soname_span(raw):
     """(file_offset, length) of the DT_SONAME string, or None.
 
@@ -111,6 +218,8 @@ def main(argv):
         return 2
 
     raw = words(patched)
+    if int.from_bytes(raw[B_PROBE[0]:B_PROBE[0] + 4], 'little') == B_PROBE[1]:
+        return audit_build_b(raw, pristine, Cs(CS_ARCH_ARM64, CS_MODE_ARM))
     elf = ELFFile(open(patched, 'rb'))
     if elf['e_machine'] != 'EM_AARCH64' or not elf.elfclass == 64:
         print('not aarch64 ELF64')

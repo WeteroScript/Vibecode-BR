@@ -7,3 +7,6 @@ __pycache__/
 
 # kolson unlock build output
 tools/kolson/unlock/build/
+
+# готовые собранные .so (не тянем в git, файл лежит в рабочей папке)
+artifacts/
