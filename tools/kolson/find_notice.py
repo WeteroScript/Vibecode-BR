@@ -9,6 +9,9 @@ Custom/modules и перезапустите игру" могут жить в Л
     python3 find_notice.py app.apk "сторонние библиотеки"
     python3 find_notice.py --device com.br.top "сторонние"     # снять APK с телефона
     python3 find_notice.py --lib libkolson.so                  # что искать в нативной части
+    python3 find_notice.py --hide app.apk -o app-clean.apk     # сделать баннер невидимым
+    python3 find_notice.py --scan-dir /sdcard/Download "сторонние"  # все apk в папке
+    python3 find_notice.py app.apk "сторонние" --report r.txt  # короткий отчёт файлом
     python3 find_notice.py app.apk --list модул        # все строки с подстрокой
     python3 find_notice.py classes8.dex --list Custom  # можно по одному dex
     python3 find_notice.py app.apk "фраза" --smali     # плюс псевдо-smali метода
@@ -214,8 +217,32 @@ class Dex:
 
 
 # --------------------------------------------------- apk: ресурсы, assets, .so
+def arsc_entries(raw):
+    """Глобальный пул строк resources.arsc: yield (index, (text, data_off, bytes))."""
+    try:
+        ctype, hsize, _size = struct.unpack_from("<HHI", raw, 0)
+        if ctype != 0x0002:
+            return
+        p = hsize
+        while p + 8 <= len(raw):
+            ctype, hsize, size = struct.unpack_from("<HHI", raw, p)
+            if size < 8:
+                return
+            if ctype == 0x0001:
+                yield from _string_pool(raw, p)
+                return
+            p += size
+    except struct.error:
+        return
+
+
 def arsc_strings(raw):
     """Глобальный пул строк resources.arsc: yield (index, str)."""
+    for i, (txt, _off, _n) in arsc_entries(raw):
+        yield i, txt
+
+
+def _unused_arsc_strings(raw):
     try:
         ctype, hsize, _size = struct.unpack_from("<HHI", raw, 0)
         if ctype != 0x0002:                     # RES_TABLE_TYPE
@@ -251,14 +278,14 @@ def _string_pool(raw, base):
                     q += 2
                 else:
                     q += 1
-                yield i, raw[q:q + n].decode("utf-8", "replace")
+                yield i, (raw[q:q + n].decode("utf-8", "replace"), q, n)
             else:
                 n, = struct.unpack_from("<H", raw, q)
                 q += 2
                 if n & 0x8000:
                     n = ((n & 0x7FFF) << 16) | struct.unpack_from("<H", raw, q)[0]
                     q += 2
-                yield i, raw[q:q + 2 * n].decode("utf-16-le", "replace")
+                yield i, (raw[q:q + 2 * n].decode("utf-16-le", "replace"), q, 2 * n)
         except (IndexError, struct.error):
             continue
 
@@ -332,6 +359,147 @@ def scan_apk(path, needle):
                 for off, enc in hits[:20]:
                     print("   +%#x [%s] %r" % (off, enc, context(raw, off, enc)))
                 total += len(hits)
+    return total
+
+
+# ---------------------------------------------------------------- обезвреживание
+# Невидимые символы той же байтовой длины: строка остаётся валидной и на том же
+# месте (офсеты пула строк не меняются), но на экране читается как пусто.
+_BLANK = {1: " ", 2: "\u00a0", 3: "\u2000", 4: "\U0001d15d"}
+
+
+def _blank_text(txt):
+    """Заменяет каждый символ на невидимый той же длины в байтах (или None)."""
+    out = []
+    for ch in txt:
+        n = len(ch.encode("utf-8"))
+        rep = _BLANK.get(n)
+        if rep is None:
+            return None
+        out.append(rep)
+    return "".join(out)
+
+
+def hide_blob(raw, needle):
+    """Бланкирует вхождения в произвольном файле (assets, .so, dex) по NUL-границам."""
+    data = bytearray(raw)
+    done = []
+    for enc, pat in _encodings(needle):
+        step = 1 if enc == "utf-8" else 2
+        end_mark = b"\x00" if step == 1 else b"\x00\x00"
+        start = 0
+        while True:
+            i = bytes(data).find(pat, start)
+            if i < 0:
+                break
+            lo, hi = i, i + len(pat)
+            while lo - step >= 0 and data[lo - step:lo] != end_mark:
+                lo -= step
+            while hi + step <= len(data) and data[hi:hi + step] != end_mark:
+                hi += step
+            try:
+                txt = bytes(data[lo:hi]).decode(enc, "strict")
+            except UnicodeDecodeError:
+                start = i + 1
+                continue
+            if needle.lower() not in txt.lower():
+                start = i + 1
+                continue
+            blank = _blank_text(txt)
+            if blank is None or len(blank.encode(enc)) != len(txt.encode(enc)):
+                done.append((lo, enc, txt, None))
+                start = hi
+                continue
+            data[lo:hi] = blank.encode(enc)
+            done.append((lo, enc, txt, blank))
+            start = hi
+    return bytes(data), done
+
+
+def hide_arsc(raw, needle):
+    """Бланкирует строки пула resources.arsc точно по (offset, len) из пула."""
+    data = bytearray(raw)
+    done = []
+    for idx, (txt, off, n) in arsc_entries(raw):
+        if needle.lower() not in txt.lower():
+            continue
+        blank = _blank_text(txt)
+        if blank is None:
+            done.append((off, "arsc", txt, None))
+            continue
+        enc = "utf-8" if len(blank.encode("utf-8")) == n else "utf-16-le"
+        enc_bytes = blank.encode(enc)
+        if len(enc_bytes) != n:
+            done.append((off, "arsc", txt, None))
+            continue
+        data[off:off + n] = enc_bytes
+        done.append((off, "arsc", txt, blank))
+    return bytes(data), done
+
+
+def hide_dex(raw, needle):
+    """Бланкирует строки dex по строковым офсетам (uleb-длину не трогаем)."""
+    d = Dex(raw, "<dex>")
+    data = bytearray(raw)
+    done = []
+    for idx in range(d.string_ids_size):
+        off, n = d.string_off(idx)
+        chunk = raw[off:off + n]
+        if needle.encode("utf-8") not in chunk or needle.encode("utf-16-le") in chunk:
+            continue
+        try:
+            txt = chunk.decode("utf-8", "strict")
+        except UnicodeDecodeError:
+            continue
+        if needle.lower() not in txt.lower():
+            continue
+        blank = _blank_text(txt)
+        if blank is None or len(blank.encode("utf-8")) != n:
+            done.append((off, "dex", txt, None))
+            continue
+        data[off:off + n] = blank.encode("utf-8")
+        done.append((off, "dex", txt, blank))
+    return bytes(data), done
+
+
+def hide_apk(src, dst, needle):
+    """Новый APK, в котором строка-баннер невидима (arsc/assets/.so/dex)."""
+    total = 0
+    with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in zin.infolist():
+            raw = zin.read(info.filename)
+            n = info.filename
+            may_hit = (n == "resources.arsc" or n.startswith("assets/")
+                       or (n.startswith("lib/") and n.endswith(".so"))
+                       or re.match(r"classes\d*\.dex$", n))
+            if may_hit and search_blob(raw, needle):
+                if n == "resources.arsc":
+                    new, done = hide_arsc(raw, needle)
+                    if not done:                     # пул не распознан - грубый путь
+                        new, done = hide_blob(raw, needle)
+                elif re.match(r"classes\d*\.dex$", n):
+                    new, done = hide_dex(raw, needle)
+                else:
+                    new, done = hide_blob(raw, needle)
+                for off, enc, was, now in done:
+                    if now is None:
+                        print("   %s+%#x [%s] НЕ обезврежено (непечатаемые байты), "
+                              "строка длиной %d: %r" % (n, off, enc, len(was), was[:60]))
+                    else:
+                        print("   %s+%#x [%s] %r -> скрыто" % (n, off, enc, was[:70]))
+                        total += 1
+                raw = new
+            # сохраняем исходный способ хранения (STORED для .so и .arsc и т.п.)
+            zi = zipfile.ZipInfo(n, date_time=info.date_time)
+            zi.compress_type = info.compress_type
+            zi.external_attr = info.external_attr
+            zi.internal_attr = info.internal_attr
+            zi.create_system = info.create_system
+            zout.writestr(zi, raw)
+    print("обезврежено строк: %d -> %s" % (total, dst))
+    if total:
+        print("дальше: подпиши APK заново (apksigner с любым своим ключом) и установи — "
+              "подпись всё равно меняется из-за замены libkolson.so")
     return total
 
 
@@ -470,6 +638,59 @@ def report_dex(d, needle, mode_list=False, mode_smali=False):
 
 def main(argv):
     argv = list(argv)
+    if "--scan-dir" in argv:
+        i = argv.index("--scan-dir")
+        folder = argv[i + 1]
+        pos = [a for a in argv[1:] if not a.startswith("--") and a != folder
+               and a not in (argv[argv.index("-o") + 1] if "-o" in argv else "", )]
+        needle = pos[0] if pos else "сторонние библиотеки"
+        files = sorted(f for f in os.listdir(folder) if re.search(r"\.(apk|apks|zip)$", f))
+        print("папка %s: %d apk" % (folder, len(files)))
+        hit = []
+        for f in files:
+            try:
+                n = scan_apk(os.path.join(folder, f), needle)
+            except (zipfile.BadZipFile, OSError) as e:
+                print("   %s: пропущено (%s)" % (f, e))
+                continue
+            if n:
+                hit.append((f, n))
+        print("итого: %s" % (", ".join("%s (%d)" % h for h in hit) if hit else "нет совпадений"))
+        return 0 if hit else 1
+    if "--hide" in argv:
+        i = argv.index("--hide")
+        src = argv[i + 1]
+        dst = "hid.apk"
+        if "-o" in argv:
+            dst = argv[argv.index("-o") + 1]
+        pos = [a for a in argv[1:] if not a.startswith("--") and a not in ("-o", dst, src)]
+        needle = pos[0] if pos else "сторонние библиотеки"
+        hide_apk(src, dst, needle)
+        return 0
+    if "--report" in argv:
+        i = argv.index("--report")
+        out = argv[i + 1]
+        class _Tee:
+            def __init__(self, fh):
+                self.fh = fh
+                self.buf = io.StringIO()
+
+            def write(self, s):
+                sys.__stdout__.write(s)
+                self.buf.write(s)
+
+            def flush(self):
+                sys.__stdout__.flush()
+
+        tee = _Tee(None)
+        sys.stdout = tee
+        try:
+            rc = main([a for a in argv if a not in ("--report", out)])
+        finally:
+            sys.stdout = sys.__stdout__
+            open(out, "w", encoding="utf-8").write(tee.buf.getvalue())
+            print("отчёт: %s" % out)
+        return rc
     if "--lib" in argv:
         i = argv.index("--lib")
         lib_report(argv[i + 1])

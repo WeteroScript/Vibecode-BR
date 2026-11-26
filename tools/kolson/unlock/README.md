@@ -231,3 +231,35 @@ python3 tools/kolson/find_notice.py --device com.br.top "сторонние"
    adb logcat -c; adb shell am start -n com.br.top/... ; sleep 8
    adb logcat -d | grep -iE "modules|third|сторон|umbrella|kolson" | head -50
    ```
+
+### если APK нельзя никуда загрузить
+
+Всё считается на телефоне (Termux) или на ПК, ничего никуда не отправляется.
+
+```bash
+# 1) скрипт (без зависимостей, чистый python3)
+curl -LO https://raw.githubusercontent.com/WeteroScript/Vibecode-BR/\
+arena/0d3e1ff3-vibecode-br/tools/kolson/find_notice.py
+
+# 2) найти APK, если не помнишь где он
+ls -la /sdcard/Download/*.apk /sdcard/*.apk 2>/dev/null
+
+# 3) просканировать все apk в папке (все dex + arsc + assets + .so)
+python3 find_notice.py --scan-dir /sdcard/Download "сторонние"
+
+# 4) отчёт по конкретному APK текстом (его можно скопировать/переслать)
+python3 find_notice.py /sdcard/Download/base.apk "сторонние" --report notice.txt
+
+# 5) сразу обезвредить баннер (строка станет невидимой, длина файла не меняется)
+python3 find_notice.py --hide /sdcard/Download/base.apk -o /sdcard/Download/base-clean.apk
+```
+
+`--hide` бланкирует найденные вхождения невидимыми символами той же байтовой
+длины: пул строк `resources.arsc`, строки dex (по строковым офсетам, uleb-длина
+не трогается) и строки в `assets/*` / `lib/*/*.so`. Смещения и размеры не
+меняются, но `resources.arsc` попадает в APK — подпись всё равно пересчитывается
+(она и так пересчитывается из-за замены `libkolson.so`).
+
+Важно: `--hide` убирает только текст. Если баннер ещё и блокирует функции,
+нужен патч самой проверки — тогда по отчёту (`--report`) видно класс/метод и
+дальше правится либо dex, либо нативная часть.
