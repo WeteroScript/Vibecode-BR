@@ -79,12 +79,12 @@ payload:
     ldr  x8, [x20]
     ldr  x8, [x8, #48]         // VM_GetEnv=6 -> 6*8
     mov  x0, x20
-    add  x1, sp, #0x40
+    add  x1, sp, #0x20          // env out-param: free slot
     movz w2, #0x0006
     movk w2, #0x0001, lsl #16
     blr  x8
     cbnz w0, payload_done
-    ldr  x21, [sp, #0x40]      // env
+    ldr  x21, [sp, #0x20]      // env
     cbz  x21, payload_done
 
     // Application
@@ -197,7 +197,7 @@ call_findclass:                // (env, name) -> cls
 
 call_getstaticmid:             // (env, cls, name, sig) -> mid
     ldr  x8, [x0]
-    ldr  x8, [x8, #936]        // 117*8
+    ldr  x8, [x8, #904]        // GetStaticMethodID = 113*8
     br   x8
 
 call_getmid:                   // (env, cls, name, sig) -> mid
@@ -212,17 +212,17 @@ call_getobjclass:              // (env, obj) -> cls
 
 call_staticobj:                // (env, cls, mid) -> obj
     ldr  x8, [x0]
-    ldr  x8, [x8, #944]        // 118*8
+    ldr  x8, [x8, #1064]       // CallStaticObjectMethod = 133*8
     br   x8
 
 call_staticobj_n:              // (env, cls, mid, a, b, c) -> obj
     ldr  x8, [x0]
-    ldr  x8, [x8, #944]
+    ldr  x8, [x8, #1064]       // CallStaticObjectMethod = 133*8
     br   x8
 
 call_newstring:                // (env, utf) -> jstring
     ldr  x8, [x0]
-    ldr  x8, [x8, #1368]       // 171*8
+    ldr  x8, [x8, #1336]       // NewStringUTF = 167*8
     br   x8
 
 call_callvoid:                 // (env, obj, mid)
