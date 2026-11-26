@@ -103,6 +103,7 @@ jobs:
           cp tools/kolson/unlock/README.md "$staging/"
           ( cd "$staging" && zip -9 -r kolson-unlocked.zip . )
           echo "ZIP=$staging/kolson-unlocked.zip" >> "$GITHUB_ENV"
+          echo "SO=$staging/libkolson.unlocked.so" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         if: ${{ !inputs.tag_only }}
@@ -118,6 +119,6 @@ jobs:
         run: |
           tag="${{ inputs.release_tag }}"
           [ -n "$tag" ] || tag="kolson-unlock-${GITHUB_RUN_NUMBER}"
-          gh release create "$tag" "$ZIP" \
+          gh release create "$tag" "$ZIP" "$SO" \
             --title "libkolson unlocked ($tag)" \
-            --notes "patched libkolson.unlocked.so + host patcher + arm64 runtime shim; see README.md inside the archive"
+            --notes "libkolson.unlocked.so (25 kill-switches) + host patcher + arm64 runtime shim. sha256 in patched.sha256 inside the archive."
