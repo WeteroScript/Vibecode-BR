@@ -1,0 +1,6 @@
+# analysis scratch / build products
+.venv-re/
+re/out/
+re/out2/
+*.pyc
+__pycache__/
