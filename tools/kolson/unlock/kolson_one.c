@@ -54,6 +54,8 @@
 
 /* --------------------------------------------------------------- состояние */
 
+static size_t    g_size;         /* размер образа по PT_LOAD           */
+static int       g_build = -1;   /* индекс сборки в kKolsonBuilds      */
 #if !defined(KOLSON_HOST)
 static uintptr_t g_base;         /* адрес загрузки libkolson.so        */
 static char      g_path[256];    /* откуда именно она загружена        */
@@ -125,26 +127,49 @@ static int patch_group(uintptr_t base, unsigned va, const uint32_t *expect,
 
 /* --------------------------------------------------- весь набор по таблице */
 
-int kolson_patch_image(uintptr_t base, int *patched, int *failed) {
+int kolson_patch_image_sized(uintptr_t base, size_t size, int *patched, int *failed) {
     int ok = 0, bad = 0;
-    for (int i = 0; i < KOLSON_PATCH_COUNT; ) {
+    g_build = kolson_detect_build((const void *)base, size);
+    if (g_build < 0) {
+        LOGE("unknown build: ни одна сигнатура не совпала (%zu байт)", size);
+        if (patched) *patched = 0;
+        if (failed)  *failed = 1;
+        return -2;
+    }
+    const kolson_patch_t *sites = kKolsonBuilds[g_build].sites;
+    const int nsites = kKolsonBuilds[g_build].count;
+    LOGI("build: %s (%d сайтов)", kKolsonBuilds[g_build].name, nsites);
+
+    for (int i = 0; i < nsites; ) {
         int group = 1;
-        while (i + group < KOLSON_PATCH_COUNT &&
-               kKolsonPatches[i + group].va == kKolsonPatches[i].va + 4u * (unsigned)group)
+        while (i + group < nsites &&
+               sites[i + group].va == sites[i].va + 4u * (unsigned)group)
             group++;
 
         uint32_t expect[8], repl[8];
         for (int k = 0; k < group; k++) {
-            expect[k] = kKolsonPatches[i + k].expect;
-            repl[k]   = kKolsonPatches[i + k].replace;
+            expect[k] = sites[i + k].expect;
+            repl[k]   = sites[i + k].replace;
         }
-        if (patch_group(base, kKolsonPatches[i].va, expect, repl, group) == 0) ok += group;
+        if (patch_group(base, sites[i].va, expect, repl, group) == 0) ok += group;
         else bad += group;
         i += group;
     }
     if (patched) *patched = ok;
     if (failed)  *failed = bad;
     return bad == 0 ? 0 : -1;
+}
+
+int kolson_patch_image(uintptr_t base, int *patched, int *failed) {
+    return kolson_patch_image_sized(base, g_size ? g_size : (size_t)1 << 26, patched, failed);
+}
+
+const char *kolson_build_name(void) {
+    return g_build >= 0 ? kKolsonBuilds[g_build].name : "(unknown)";
+}
+
+int kolson_site_count(void) {
+    return g_build >= 0 ? kKolsonBuilds[g_build].count : 0;
 }
 
 #if defined(KOLSON_ANDROID)
@@ -159,6 +184,13 @@ static int find_module(struct dl_phdr_info *info, size_t size, void *data) {
     const char *leaf = slash ? slash + 1 : info->dlpi_name;
     if (strcmp(leaf, "libkolson.so") != 0) return 0;
     g_base = (uintptr_t)info->dlpi_addr;
+    g_size = 0;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        if (ph->p_type != PT_LOAD) continue;
+        size_t end = (size_t)ph->p_vaddr + (size_t)ph->p_memsz;
+        if (end > g_size) g_size = end;
+    }
     snprintf(g_path, sizeof g_path, "%s", info->dlpi_name);
     return 1;
 }
@@ -213,11 +245,12 @@ static int kolson_run(const char *dir) {
         }
     }
 
-    kolson_patch_image(g_base, &g_patched, &g_failed);
+    kolson_patch_image_sized(g_base, g_size, &g_patched, &g_failed);
     /* libkolson уже в памяти: догоняем GOT-подмену для модулей, загруженных
        раньше нас (на Android основную работу делает RTLD_GLOBAL-промоушен) */
     kolson_stealth_install();
-    LOGI("%s base=%p patched=%d failed=%d", g_path, (void *)g_base, g_patched, g_failed);
+    LOGI("%s base=%p build=%s patched=%d failed=%d", g_path, (void *)g_base,
+         kolson_build_name(), g_patched, g_failed);
     int rc = g_failed ? -1 : 0;
     pthread_mutex_unlock(&g_lock);
     return rc;
@@ -234,6 +267,10 @@ __attribute__((constructor)) static void kolson_ctor(void) {
 }
 
 /* --------------------------------------------------------------- JNI-часть */
+
+int kolson_patch_image_sized(uintptr_t base, size_t size, int *patched, int *failed);
+const char *kolson_build_name(void);
+int kolson_site_count(void);
 
 /* Экспортируем методы обычными JNI-именами: класс не нужно искать через
    FindClass (а значит, нет зависимости от ClassLoader и от момента, когда
@@ -284,8 +321,9 @@ JNIEXPORT jstring JNICALL
 Java_com_klnc_native_KolsonPatch_nativeReport(JNIEnv *env, jclass cls) {
     (void)cls;
     char buf[512];
-    snprintf(buf, sizeof buf, "patched=%d failed=%d base=%p path=%s",
-             g_patched, g_failed, (void *)g_base, g_path[0] ? g_path : "(not loaded)");
+    snprintf(buf, sizeof buf, "build=%s patched=%d failed=%d base=%p path=%s",
+             kolson_build_name(), g_patched, g_failed, (void *)g_base,
+             g_path[0] ? g_path : "(not loaded)");
     return (*env)->NewStringUTF(env, buf);
 }
 

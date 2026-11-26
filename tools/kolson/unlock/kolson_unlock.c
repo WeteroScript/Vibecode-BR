@@ -207,9 +207,26 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    int build = kolson_detect_build(buf, size);
+    if (build < 0) {
+        fprintf(stderr, "kolson_unlock: %s: неизвестная сборка (нет ни одной "
+                        "сигнатуры из %d)\n", in, KOLSON_BUILD_COUNT);
+        for (int i = 0; i < KOLSON_BUILD_COUNT; i++)
+            fprintf(stderr, "   %-24s probe %#010x == %#010x\n",
+                    kKolsonBuilds[i].name, kKolsonBuilds[i].probe_va,
+                    kKolsonBuilds[i].probe_expect);
+        free(buf);
+        return 3;
+    }
+    const kolson_patch_t *sites = kKolsonBuilds[build].sites;
+    const int nsites = kKolsonBuilds[build].count;
+    if (!strstr(in, "/dev/null"))
+        fprintf(stderr, "kolson_unlock: сборка %s (%d сайтов)\n",
+                kKolsonBuilds[build].name, nsites);
+
     int applied = 0, skipped = 0, mismatch = 0;
-    for (int i = 0; i < KOLSON_PATCH_COUNT; i++) {
-        const kolson_patch_t *p = &kKolsonPatches[i];
+    for (int i = 0; i < nsites; i++) {
+        const kolson_patch_t *p = &sites[i];
         if (!selected(p->module, only)) continue;
 
         uint32_t now = rd32(buf, p->va);
@@ -242,7 +259,7 @@ int main(int argc, char **argv) {
     }
 
     if (mode == MODE_LIST) {
-        printf("\n%d sites, %d unexpected%s\n", KOLSON_PATCH_COUNT, mismatch,
+        printf("\n%d sites, %d unexpected%s\n", nsites, mismatch,
                mismatch ? " (other build? use --force)" : "");
         free(buf);
         return mismatch ? 3 : 0;

@@ -20,6 +20,9 @@
 #include <unistd.h>
 
 int kolson_patch_image(uintptr_t base, int *patched, int *failed);
+int kolson_patch_image_sized(uintptr_t base, size_t size, int *patched, int *failed);
+const char *kolson_build_name(void);
+int kolson_site_count(void);
 
 static unsigned char *slurp(const char *path, size_t *len) {
     FILE *f = fopen(path, "rb");
@@ -53,17 +56,23 @@ int main(int argc, char **argv) {
     memcpy(img, file, plen);
 
     int patched = 0, failed = 0;
-    int rc = kolson_patch_image((uintptr_t)img, &patched, &failed);
-    printf("kolson_patch_image: rc=%d patched=%d failed=%d\n", rc, patched, failed);
+    int rc = kolson_patch_image_sized((uintptr_t)img, plen, &patched, &failed);
+    int want = kolson_site_count();
+    printf("kolson_patch_image: rc=%d build=%s patched=%d failed=%d (сайтов %d)\n",
+           rc, kolson_build_name(), patched, failed, want);
 
     int bad = 0;
-    if (patched != 25 || failed != 0) { printf("FAIL: expected patched=25 failed=0\n"); bad++; }
+    if (patched != want || failed != 0 || want == 0) {
+        printf("FAIL: expected patched=%d failed=0\n", want);
+        bad++;
+    }
 
     /* все прочие байты обязаны совпасть с оригиналом */
     size_t diff = 0;
     for (size_t i = 0; i < plen; i++)
         if (img[i] != file[i]) diff++;
-    printf("bytes changed vs pristine: %zu (ожидаем 98: 25 слов + пара mov/ret)\n", diff);
+    printf("bytes changed vs pristine: %zu (<= %d Б: %d слов)\n", diff, want * 4, want);
+    if (diff == 0 || diff > (size_t)want * 4) { printf("FAIL: diff out of range\n"); bad++; }
 
     if (argc > 2) {
         size_t elen = 0;
@@ -89,9 +98,9 @@ int main(int argc, char **argv) {
 
     /* идемпотентность: второй прогон не должен ничего сломать */
     int p2 = 0, f2 = 0;
-    kolson_patch_image((uintptr_t)img, &p2, &f2);
-    printf("second pass: patched=%d failed=%d (ожидаем 25/0)\n", p2, f2);
-    if (p2 != 25 || f2 != 0) bad++;
+    kolson_patch_image_sized((uintptr_t)img, plen, &p2, &f2);
+    printf("second pass: patched=%d failed=%d (ожидаем %d/0)\n", p2, f2, want);
+    if (p2 != want || f2 != 0) bad++;
 
     printf("%s\n", bad ? "RESULT: FAIL" : "RESULT: OK");
     return bad ? 1 : 0;

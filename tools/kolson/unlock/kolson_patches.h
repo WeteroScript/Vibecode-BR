@@ -38,6 +38,9 @@
 #ifndef KOLSON_PATCHES_H
 #define KOLSON_PATCHES_H
 
+#include <stddef.h>
+#include <string.h>
+
 /* AArch64 encodings used below */
 #define KOLSON_I_RET            0xd65f03c0u  /* ret                */
 #define KOLSON_I_MOV_W0_ZR      0x2a1f03e0u  /* mov w0, wzr        */
@@ -46,7 +49,7 @@
 #define KOLSON_I_NOP            0xd503201fu  /* nop                */
 #define KOLSON_I_PACIASP        0xd503233fu  /* paciasp (entry tag) */
 
-#define KOLSON_PATCHES(X)                                                           \
+#define KOLSON_PATCHES_A(X)                                                           \
     /* ---- core: the whole protection checker ---------------------------------- */\
     X("core",   0x0166c54u, KOLSON_I_PACIASP,   KOLSON_I_MOV_W0_ZR)                 \
     X("core",   0x0166c58u, 0xa9ba7bfdu,        KOLSON_I_RET)                       \
@@ -79,6 +82,31 @@
     X("crash",  0x0524640u, KOLSON_I_PACIASP,   KOLSON_I_MOV_W0_ZR)                 \
     X("crash",  0x0524644u, 0xd10203ffu,        KOLSON_I_RET)
 
+/* ------------------------------------------------------------------------- *
+ * сборка 16.116.0 (8 609 952 Б, sha256 9e9fae28…): функции переписаны, старые
+ * адреса недействительны. Найдено заново по якорям-строкам:
+ *
+ *   build_mismatch / signature_mismatch / command_unreadable / command_mismatch
+ *   + login_hooks:ready  -> одна функция проверки команд/подписи входа,
+ *   рядом с 0x2fca24..0x2fcdc0. Проверок там 10: пять «tbz w0,#0» (результат
+ *   сверки через bl 0x2fd094) и пять «b.ne» (сверка указателей с эталонами в
+ *   образе). Все ведут в ветки отказа, успешная ветка (0x2fcc84) ставит хуки.
+ *
+ *   nop на каждой проверке -> исполнение идёт в успешную ветку, хуки ставятся,
+ *   ровно как в сборке KOLSON_6.
+ * ------------------------------------------------------------------------- */
+#define KOLSON_PATCHES_B(X)                                                       \
+    X("auth", 0x02fcba4u, 0x36000c20u, KOLSON_I_NOP)  /* tbz w0,#0 -> unread.  */ \
+    X("auth", 0x02fcbc4u, 0x36000b20u, KOLSON_I_NOP)                            \
+    X("auth", 0x02fcbe0u, 0x36000a40u, KOLSON_I_NOP)                            \
+    X("auth", 0x02fcbf4u, 0x360009a0u, KOLSON_I_NOP)                            \
+    X("auth", 0x02fcc10u, 0x360008c0u, KOLSON_I_NOP)                            \
+    X("auth", 0x02fcc2cu, 0x54000c81u, KOLSON_I_NOP)  /* b.ne -> build_mismatch */ \
+    X("auth", 0x02fcc48u, 0x54000ba1u, KOLSON_I_NOP)                            \
+    X("auth", 0x02fcc5cu, 0x54000b01u, KOLSON_I_NOP)                            \
+    X("auth", 0x02fcc6cu, 0x54000a81u, KOLSON_I_NOP)                            \
+    X("auth", 0x02fcc80u, 0x540009e1u, KOLSON_I_NOP)
+
 typedef struct {
     const char *module;
     unsigned    va;
@@ -87,9 +115,43 @@ typedef struct {
 } kolson_patch_t;
 
 #define KOLSON_X(mod, va, exp, rep) { (mod), (va), (exp), (rep) },
-static const kolson_patch_t kKolsonPatches[] = { KOLSON_PATCHES(KOLSON_X) };
+static const kolson_patch_t kKolsonSitesA[] = { KOLSON_PATCHES_A(KOLSON_X) };
+static const kolson_patch_t kKolsonSitesB[] = { KOLSON_PATCHES_B(KOLSON_X) };
 #undef KOLSON_X
 
-#define KOLSON_PATCH_COUNT ((int)(sizeof(kKolsonPatches) / sizeof(kKolsonPatches[0])))
+#define KOLSON_N(a) ((int)(sizeof(a) / sizeof((a)[0])))
+
+/* Сборка узнаётся по одному слову в характерном месте: ни один сайт не
+   применяется к чужой сборке, а таблицы могут сосуществовать. */
+typedef struct {
+    const char *name;
+    unsigned    probe_va;
+    unsigned    probe_expect;
+    const kolson_patch_t *sites;
+    int         count;
+} kolson_build_t;
+
+static const kolson_build_t kKolsonBuilds[] = {
+    /* probe - слово, которое мы НЕ патчим: иначе повторный прогон на уже
+       пропатченном образе не узнает сборку */
+    { "KOLSON_6 (6 956 216 B)",  0x0166c60u, 0x910003fdu, kKolsonSitesA, KOLSON_N(kKolsonSitesA) },
+    { "16.116.0 (8 609 952 B)",  0x02fcc84u, 0x2a1f03f3u, kKolsonSitesB, KOLSON_N(kKolsonSitesB) },
+};
+#define KOLSON_BUILD_COUNT KOLSON_N(kKolsonBuilds)
+
+static inline int kolson_detect_build(const void *img, size_t size) {
+    for (int i = 0; i < KOLSON_BUILD_COUNT; i++) {
+        const kolson_build_t *b = &kKolsonBuilds[i];
+        if ((size_t)b->probe_va + sizeof(unsigned) > size) continue;
+        unsigned w = 0;
+        memcpy(&w, (const unsigned char *)img + b->probe_va, sizeof w);
+        if (w == b->probe_expect) return i;
+    }
+    return -1;
+}
+
+/* обратная совместимость для старого кода/скриптов */
+#define kKolsonPatches      kKolsonSitesA
+#define KOLSON_PATCH_COUNT  KOLSON_N(kKolsonSitesA)
 
 #endif /* KOLSON_PATCHES_H */
