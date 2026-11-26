@@ -5,6 +5,7 @@
 
 | способ | что делает | когда использовать |
 |---|---|---|
+| **одна библиотека** `libkolson_patch.so` | находит/подгружает штатную `libkolson.so` и патчит 25 слов **в памяти**; файл игры не меняется, второй копии в процессе нет | APK: `lib/arm64-v8a/libkolson_patch.so`, один вызов `loadLibrary` |
 | **offline** `kolson_unlock` | правит 25 слов прямо в `.so`, на выходе `libkolson.unlocked.so` (или `libklnc.so` с ключом `-n`), размер байт в байт как у оригинала | замена файла в APK / `lib/arm64-v8a/` |
 | **runtime** `libkolson_unlock_rt.so` | конструктор находит уже замапленный `libkolson.so`, валидирует слова, патчит через `mprotect(rwx)`, сбрасывает i-cache, возвращает `r-x` | оригинал на диске не трогаем, `LD_PRELOAD` / инжект |
 
@@ -38,11 +39,41 @@
 ```bash
 cd tools/kolson/unlock
 make                      # build/kolson_unlock (+ arm64 shim, если найден NDK)
-make list                 # показать 23 сайта и их слова в вашем билде
+make list                 # показать 25 сайтов и их слова в вашем билде
+make one                  # build/libkolson_patch.so - ОДНА библиотека (нужен NDK)
+make one-test             # хост-проверка: патч в памяти == offline-патч
 make patch                # build/libkolson.unlocked.so (SONAME libkolson.so)
 make patch-klnc           # build/libklnc.so (те же патчи, SONAME libklnc.so)
 make verify               # аудит: стабы + дифф «ничего лишнего не изменено»
 ```
+
+### одна библиотека (рекомендуется)
+
+`make one` → `build/libkolson_patch.so` (≈12 КБ). Это единственный файл, который
+нужно положить в APK: он сам находит (или `dlopen`-ит) штатную `libkolson.so`,
+сверяет все 25 эталонных слов и патчит её **в памяти** — файл на диске остаётся
+оригинальным, второй копии игровой библиотеки в процессе нет, и в
+`1NEIZZIR/Modules` / `Custom/modules` ничего не появляется.
+
+```
+System.loadLibrary("kolson")          // штатная загрузка, как обычно
+System.loadLibrary("kolson_patch")    // патч: 25 сайтов -> «проверка пройдена»
+```
+
+`make one-test` доказывает на хосте (без устройства и NDK), что runtime-патч даёт
+**побайтово тот же образ**, что и offline-патчер:
+
+```
+kolson_patch_image: rc=0 patched=25 failed=0
+bytes changed vs pristine: 98
+bytes differing from build/libkolson.unlocked.so: 0
+OK: runtime patch == offline patch
+one-test: runtime patch == offline patch (byte-for-byte)
+```
+
+JNI-интерфейс (`smali/KolsonPatch.smali`): `nativeApply()`, `nativeApplyDir(dir)`,
+`nativePatched()`, `nativeFailed()`, `nativeReport()`. Если библиотека только
+предзагружена — конструктор делает то же самое без Java.
 
 ### два артефакта и SONAME
 
